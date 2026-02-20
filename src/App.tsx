@@ -88,7 +88,7 @@ class ErrorBoundary extends Component<{ children: ReactNode; fallback?: ReactNod
 export default function App() {
   const trimble = useTrimbleConnect();
   const theme = useTheme();
-  const [activeTab, setActiveTab] = useState<TabId>('ids');
+  const [activeTab, setActiveTab] = useState<TabId>('explorer');
   const [selectionInfo, setSelectionInfo] = useState<{ name: string; type: string } | null>(null);
 
   const selectionCount = useMemo(

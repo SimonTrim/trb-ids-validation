@@ -176,13 +176,59 @@ export async function getLoadedModels(api: TrimbleAPI | null): Promise<LoadedMod
     return [{ id: 'mock-model-1', name: 'Projet Test DOE.ifc' }];
   }
   try {
-    const models = await api.viewer.getModels('loaded') as Array<{ id: string; name?: string }>;
-    console.log('[ViewerBridge] loaded models:', models?.length, models);
-    return models.map((m) => ({ id: m.id, name: m.name ?? m.id }));
+    const models = await api.viewer.getModels('loaded') as Array<Record<string, unknown>>;
+    console.log('[ViewerBridge] loaded models:', models?.length);
+    if (models?.length > 0) {
+      console.log('[ViewerBridge] model[0] keys:', Object.keys(models[0]).join(', '));
+      console.log('[ViewerBridge] model[0]:', safeStringify(models[0], 500));
+    }
+    return models.map((m) => ({ id: String(m.id), name: String(m.name ?? m.id) }));
   } catch (err) {
     console.error('[ViewerBridge] getLoadedModels failed:', err);
     return [];
   }
+}
+
+// Try multiple hierarchy types until one returns results
+const HIERARCHY_TYPES = ['spatial', 'containment', 'storey', 'type', ''];
+
+async function fetchHierarchy(
+  api: TrimbleAPI,
+  modelId: string,
+): Promise<unknown[]> {
+  // Log available viewer methods once for debugging
+  const viewer = api.viewer as Record<string, unknown>;
+  const methods = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
+  console.log('[ViewerBridge] viewer API methods:', methods.join(', '));
+
+  for (const hType of HIERARCHY_TYPES) {
+    try {
+      const args: [string, number[], string, boolean] | [string, number[], string] =
+        hType ? [modelId, [], hType, true] : [modelId, [], '', true];
+      const result = await api.viewer.getHierarchyChildren(...args) as unknown[];
+      console.log(`[ViewerBridge] hierarchy type='${hType}': ${result?.length ?? 0} nodes`);
+      if (result && result.length > 0) {
+        if (typeof result[0] === 'object' && result[0] !== null) {
+          console.log('[ViewerBridge] hierarchy[0] keys:', Object.keys(result[0] as Record<string, unknown>).join(', '));
+          console.log('[ViewerBridge] hierarchy[0]:', safeStringify(result[0], 500));
+        }
+        return result;
+      }
+    } catch (e) {
+      console.warn(`[ViewerBridge] hierarchy type='${hType}' failed:`, e);
+    }
+  }
+
+  // Last resort: try getHierarchyChildren with just modelId
+  try {
+    const result = await (viewer.getHierarchyChildren as Function)(modelId) as unknown[];
+    console.log('[ViewerBridge] hierarchy (modelId only):', result?.length ?? 0, 'nodes');
+    if (result && result.length > 0) return result;
+  } catch (e) {
+    console.warn('[ViewerBridge] hierarchy (modelId only) failed:', e);
+  }
+
+  return [];
 }
 
 export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNode[]> {
@@ -195,26 +241,19 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
     const rootChildren: ModelTreeNode[] = [];
 
     for (const model of models) {
-      const hierarchy = await api.viewer.getHierarchyChildren(model.id, [], 'spatial', true) as Array<{
-        runtimeId: number;
-        name?: string;
-        type?: string;
-        class?: string;
-        ifcType?: string;
-        children?: unknown[];
-        objectCount?: number;
-      }>;
+      const hierarchy = await fetchHierarchy(api, model.id);
+      console.log('[ViewerBridge] hierarchy for', model.name, ':', hierarchy.length, 'nodes');
 
-      console.log('[ViewerBridge] hierarchy for', model.name, ':', hierarchy?.length, 'nodes');
+      type HNode = { runtimeId?: number; id?: number; name?: string; type?: string; class?: string; ifcType?: string; children?: unknown[]; objectCount?: number };
 
-      const mapNode = (n: typeof hierarchy[0], depth: number): ModelTreeNode => ({
-        id: `${model.id}-${n.runtimeId}`,
-        name: n.name ?? `Objet ${n.runtimeId}`,
+      const mapNode = (n: HNode, depth: number): ModelTreeNode => ({
+        id: `${model.id}-${n.runtimeId ?? n.id ?? 0}`,
+        name: n.name ?? `Objet ${n.runtimeId ?? n.id ?? ''}`,
         type: depth === 0 ? 'level' : depth === 1 ? 'room' : 'element',
         ifcClass: n.class ?? n.ifcType ?? n.type,
         visible: true,
         objectCount: n.objectCount,
-        children: (n.children as typeof hierarchy | undefined)?.map(c => mapNode(c, depth + 1)),
+        children: (n.children as HNode[] | undefined)?.map(c => mapNode(c, depth + 1)),
       });
 
       rootChildren.push({
@@ -222,7 +261,7 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
         name: model.name,
         type: 'model',
         visible: true,
-        children: hierarchy.map(n => mapNode(n, 0)),
+        children: (hierarchy as HNode[]).map(n => mapNode(n, 0)),
       });
     }
 
@@ -258,20 +297,13 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
     const allObjects: IFCObject[] = [];
 
     for (const model of models) {
-      let hierarchy: unknown[];
-      try {
-        hierarchy = await api.viewer.getHierarchyChildren(model.id, [], 'spatial', true) as unknown[];
-        console.log('[ViewerBridge] hierarchy nodes for', model.name, ':', hierarchy?.length ?? 0);
-        if (hierarchy?.length > 0) {
-          console.log('[ViewerBridge] hierarchy[0] keys:', Object.keys(hierarchy[0] as Record<string, unknown>).join(', '));
-          console.log('[ViewerBridge] hierarchy[0] sample:', safeStringify(hierarchy[0], 400));
-        }
-      } catch (e) {
-        console.error('[ViewerBridge] getHierarchyChildren failed for', model.id, e);
+      const hierarchy = await fetchHierarchy(api, model.id);
+      console.log('[ViewerBridge] getAllIFCObjects hierarchy for', model.name, ':', hierarchy.length, 'nodes');
+
+      if (hierarchy.length === 0) {
+        console.warn('[ViewerBridge] No hierarchy nodes for', model.name, '- skipping');
         continue;
       }
-
-      if (!hierarchy || hierarchy.length === 0) continue;
 
       const allRuntimeIds = collectRuntimeIds(hierarchy);
       console.log('[ViewerBridge] total runtimeIds:', allRuntimeIds.length);

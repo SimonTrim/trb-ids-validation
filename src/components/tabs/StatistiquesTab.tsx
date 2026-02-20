@@ -58,10 +58,6 @@ const defaultTiles: TileConfig[] = [
   { id: 'sum-types', label: 'Types', visible: true, size: 'third' },
   { id: 'prop-surface', label: 'Surface totale', visible: true, size: 'half' },
   { id: 'prop-volume', label: 'Volume total', visible: true, size: 'half' },
-  { id: 'prop-hauteur', label: 'Hauteur max', visible: true, size: 'half' },
-  { id: 'prop-murs', label: 'Longueur murs', visible: true, size: 'half' },
-  { id: 'prop-vitree', label: 'Surface vitrée', visible: true, size: 'half' },
-  { id: 'prop-ratio', label: 'Ratio vitrage', visible: true, size: 'half' },
   { id: 'ifc-pie', label: 'Distribution classes IFC', visible: true, size: 'full' },
   { id: 'level-bar', label: 'Éléments par niveau', visible: true, size: 'full' },
   { id: 'material-bars', label: 'Distribution matériaux', visible: true, size: 'full' },
@@ -284,18 +280,14 @@ function TileRenderer({ id, stats }: { id: string; stats: ModelStatistics }) {
           </CardContent>
         </Card>
       );
-    case 'prop-surface':
-      return <PropCard name="Surface totale" value="2 450" unit="m²" />;
-    case 'prop-volume':
-      return <PropCard name="Volume total" value="8 575" unit="m³" />;
-    case 'prop-hauteur':
-      return <PropCard name="Hauteur max" value="12.6" unit="m" />;
-    case 'prop-murs':
-      return <PropCard name="Longueur murs" value="892" unit="m" />;
-    case 'prop-vitree':
-      return <PropCard name="Surface vitrée" value="380" unit="m²" />;
-    case 'prop-ratio':
-      return <PropCard name="Ratio vitrage" value="15.5" unit="%" />;
+    case 'prop-surface': {
+      const ps = stats.propertyStats.find(p => p.name === 'Surface totale');
+      return <PropCard name="Surface totale" value={ps?.value ?? '—'} unit="" />;
+    }
+    case 'prop-volume': {
+      const pv = stats.propertyStats.find(p => p.name === 'Volume total');
+      return <PropCard name="Volume total" value={pv?.value ?? '—'} unit="" />;
+    }
     case 'ifc-pie':
       return <IfcPieTile stats={stats} />;
     case 'level-bar':

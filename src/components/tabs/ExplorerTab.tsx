@@ -375,7 +375,9 @@ export function ExplorerTab() {
 
     if (api && targetNode) {
       const tn = targetNode as ModelTreeNode;
-      const newVisible = !tn.visible;
+      // tn.visible is already the NEW value (toggled above)
+      const newVisible = tn.visible;
+      console.log('[Explorer] toggleVisibility', tn.id, 'type=', tn.type, 'newVisible=', newVisible);
 
       if (tn.type === 'model') {
         toggleModelVisibility(api, tn.id, newVisible);
