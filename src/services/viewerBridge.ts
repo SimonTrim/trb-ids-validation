@@ -8,6 +8,12 @@ import type { ModelTreeNode, IFCObject, ViewerSelection } from '@/types';
 import { mockModelTree, mockStatistics } from '@/data/mockData';
 import { MOCK_IFC_OBJECTS } from '@/services/idsValidator';
 
+function safeStringify(obj: unknown, maxLen = 1000): string {
+  try {
+    return JSON.stringify(obj, (_k, v) => typeof v === 'bigint' ? v.toString() : v).slice(0, maxLen);
+  } catch { return String(obj); }
+}
+
 // ── Helpers ──
 
 function normalizeIfcClass(raw: string): string {
@@ -221,7 +227,7 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
           const rawArray = await api.viewer.getObjectProperties(model.id, batch);
           const propsArray = (Array.isArray(rawArray) ? rawArray : [rawArray]) as Array<Record<string, unknown>>;
 
-          if (i === 0) console.log('[ViewerBridge] sample object props:', JSON.stringify(propsArray[0]).slice(0, 500));
+          if (i === 0) console.log('[ViewerBridge] sample object props:', safeStringify(propsArray[0], 500));
 
           for (const obj of propsArray) {
             const ifcObj = viewerPropsToIFCObject(obj as never, model.id);
@@ -405,7 +411,7 @@ export async function getSelectedObjectProperties(
 
       console.log('[ViewerBridge] getObjectProperties', sel.modelId, sel.objectRuntimeIds);
       const raw = await api.viewer.getObjectProperties(sel.modelId, sel.objectRuntimeIds);
-      console.log('[ViewerBridge] raw properties:', JSON.stringify(raw).slice(0, 1000));
+      console.log('[ViewerBridge] raw properties:', safeStringify(raw));
 
       const propsArray = (Array.isArray(raw) ? raw : [raw]) as Array<Record<string, unknown>>;
 
