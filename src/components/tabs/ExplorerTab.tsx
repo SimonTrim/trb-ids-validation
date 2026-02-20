@@ -16,6 +16,7 @@ import {
   getModelTree,
   detectModelFilters,
   setObjectVisibility,
+  toggleModelVisibility,
   selectObjectsInViewer,
   isolateObjectsInViewer,
   type DetectedFilters,
@@ -368,13 +369,19 @@ export function ExplorerTab() {
       return toggle(prev);
     });
 
-    // Sync with viewer
     if (api && targetNode) {
-      const modelId = getModelIdFromNode(targetNode, treeData);
-      if (modelId) {
-        const runtimeIds = collectNodeRuntimeIds(targetNode);
-        if (runtimeIds.length > 0) {
-          setObjectVisibility(api, modelId, runtimeIds, !(targetNode as ModelTreeNode).visible);
+      const tn = targetNode as ModelTreeNode;
+      const newVisible = !tn.visible;
+
+      if (tn.type === 'model') {
+        toggleModelVisibility(api, tn.id, newVisible);
+      } else {
+        const modelId = getModelIdFromNode(tn, treeData);
+        if (modelId) {
+          const runtimeIds = collectNodeRuntimeIds(tn);
+          if (runtimeIds.length > 0) {
+            setObjectVisibility(api, modelId, runtimeIds, newVisible);
+          }
         }
       }
     }

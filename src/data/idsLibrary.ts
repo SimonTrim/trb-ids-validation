@@ -51,7 +51,8 @@ export const IDS_LIBRARY_INDEX: IDSLibraryEntry[] = [
 ];
 
 export async function loadIDSFromLibrary(entry: IDSLibraryEntry): Promise<IDSFile> {
-  const resp = await fetch(entry.path);
+  const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+  const resp = await fetch(`${base}${entry.path}`);
   if (!resp.ok) throw new Error(`Impossible de charger ${entry.fileName} (${resp.status})`);
   const xml = await resp.text();
   return parseIDSFromXML(xml, entry.id, true);

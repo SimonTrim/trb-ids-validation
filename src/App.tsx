@@ -176,7 +176,7 @@ export default function App() {
                   )}
                 >
                   <Icon className="size-3.5" />
-                  <span className="hidden sm:inline">{tab.label}</span>
+                  <span>{tab.label}</span>
                   {isActive && (
                     <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-primary rounded-t-full" />
                   )}

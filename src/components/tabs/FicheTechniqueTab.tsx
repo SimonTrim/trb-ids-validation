@@ -91,6 +91,16 @@ function isPdfUrl(url: string): boolean {
   return url.toLowerCase().endsWith('.pdf') || url.includes('/docs/');
 }
 
+function isGoogleDriveUrl(url: string): boolean {
+  return /drive\.google\.com\/file\/d\//i.test(url) || /docs\.google\.com/i.test(url);
+}
+
+function toGoogleDriveEmbedUrl(url: string): string | null {
+  const match = url.match(/drive\.google\.com\/file\/d\/([\w-]+)/);
+  if (match) return `https://drive.google.com/file/d/${match[1]}/preview`;
+  return null;
+}
+
 function detectDocuments(objectData: ObjectData): AttachedDocument[] {
   const docs: AttachedDocument[] = [];
   let idx = 0;
@@ -456,9 +466,11 @@ function DocumentsView({
           <span>•</span>
           <span className={cn(
             "px-1.5 py-0.5 rounded-full font-medium",
-            activeDoc.type === 'pdf' ? "bg-red-500/10 text-red-600" : "bg-blue-500/10 text-blue-600"
+            activeDoc.type === 'pdf' ? "bg-red-500/10 text-red-600"
+              : isGoogleDriveUrl(activeDoc.url) ? "bg-green-500/10 text-green-600"
+              : "bg-blue-500/10 text-blue-600"
           )}>
-            {activeDoc.type === 'pdf' ? 'PDF' : 'Lien'}
+            {activeDoc.type === 'pdf' ? 'PDF' : isGoogleDriveUrl(activeDoc.url) ? 'Google Drive' : 'Lien'}
           </span>
         </div>
       )}
@@ -486,6 +498,24 @@ function DocumentsView({
               className="w-full h-full border-0"
               title={activeDoc.name}
             />
+          ) : isGoogleDriveUrl(activeDoc.url) && toGoogleDriveEmbedUrl(activeDoc.url) ? (
+            <div className="flex flex-col h-full">
+              <iframe
+                key={activeDoc.url}
+                src={toGoogleDriveEmbedUrl(activeDoc.url)!}
+                className="w-full flex-1 border-0"
+                title={activeDoc.name}
+                allow="autoplay"
+                sandbox="allow-scripts allow-same-origin allow-popups"
+              />
+              <div className="flex items-center justify-between px-3 py-1.5 border-t bg-muted/30 text-[10px] text-muted-foreground">
+                <span className="truncate">{activeDoc.url}</span>
+                <Button variant="ghost" size="xs" className="gap-1 shrink-0 ml-2" onClick={() => window.open(activeDoc.url, '_blank')}>
+                  <ExternalLink className="size-3" />
+                  Ouvrir
+                </Button>
+              </div>
+            </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-center p-6">
               <div className="size-14 rounded-2xl bg-blue-500/10 flex items-center justify-center mb-3">
