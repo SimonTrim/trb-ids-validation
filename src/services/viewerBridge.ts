@@ -189,43 +189,98 @@ export async function getLoadedModels(api: TrimbleAPI | null): Promise<LoadedMod
   }
 }
 
-// Try multiple hierarchy types until one returns results
-const HIERARCHY_TYPES = ['spatial', 'containment', 'storey', 'type', ''];
+// ── Get all runtime IDs from a model using multiple API strategies ──
 
-async function fetchHierarchy(
+async function getAllModelRuntimeIds(
   api: TrimbleAPI,
   modelId: string,
-): Promise<unknown[]> {
-  // Log available viewer methods once for debugging
+): Promise<number[]> {
   const viewer = api.viewer as Record<string, unknown>;
-  const methods = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
-  console.log('[ViewerBridge] viewer API methods:', methods.join(', '));
 
-  for (const hType of HIERARCHY_TYPES) {
+  // Strategy 1: getObjects(modelId) — returns all objects in the model
+  if (typeof viewer.getObjects === 'function') {
     try {
-      const args: [string, number[], string, boolean] | [string, number[], string] =
-        hType ? [modelId, [], hType, true] : [modelId, [], '', true];
-      const result = await api.viewer.getHierarchyChildren(...args) as unknown[];
-      console.log(`[ViewerBridge] hierarchy type='${hType}': ${result?.length ?? 0} nodes`);
-      if (result && result.length > 0) {
-        if (typeof result[0] === 'object' && result[0] !== null) {
-          console.log('[ViewerBridge] hierarchy[0] keys:', Object.keys(result[0] as Record<string, unknown>).join(', '));
-          console.log('[ViewerBridge] hierarchy[0]:', safeStringify(result[0], 500));
-        }
-        return result;
+      const result = await (viewer.getObjects as Function)(modelId);
+      console.log('[ViewerBridge] getObjects result type:', typeof result, Array.isArray(result) ? `length=${result.length}` : '');
+      if (result) {
+        console.log('[ViewerBridge] getObjects sample:', safeStringify(Array.isArray(result) ? result.slice(0, 3) : result, 500));
+      }
+      const ids = extractRuntimeIdsFromResult(result);
+      if (ids.length > 0) {
+        console.log('[ViewerBridge] getObjects extracted', ids.length, 'runtimeIds');
+        return ids;
       }
     } catch (e) {
-      console.warn(`[ViewerBridge] hierarchy type='${hType}' failed:`, e);
+      console.warn('[ViewerBridge] getObjects failed:', e);
     }
   }
 
-  // Last resort: try getHierarchyChildren with just modelId
-  try {
-    const result = await (viewer.getHierarchyChildren as Function)(modelId) as unknown[];
-    console.log('[ViewerBridge] hierarchy (modelId only):', result?.length ?? 0, 'nodes');
-    if (result && result.length > 0) return result;
-  } catch (e) {
-    console.warn('[ViewerBridge] hierarchy (modelId only) failed:', e);
+  // Strategy 2: getEntities(modelId)
+  if (typeof viewer.getEntities === 'function') {
+    try {
+      const result = await (viewer.getEntities as Function)(modelId);
+      console.log('[ViewerBridge] getEntities result type:', typeof result, Array.isArray(result) ? `length=${result.length}` : '');
+      if (result) {
+        console.log('[ViewerBridge] getEntities sample:', safeStringify(Array.isArray(result) ? result.slice(0, 3) : result, 500));
+      }
+      const ids = extractRuntimeIdsFromResult(result);
+      if (ids.length > 0) {
+        console.log('[ViewerBridge] getEntities extracted', ids.length, 'runtimeIds');
+        return ids;
+      }
+    } catch (e) {
+      console.warn('[ViewerBridge] getEntities failed:', e);
+    }
+  }
+
+  // Strategy 3: getHierarchyChildren with different types
+  for (const hType of ['spatial', 'containment', 'storey', 'type', '']) {
+    try {
+      const result = await api.viewer.getHierarchyChildren(modelId, [], hType, true) as unknown[];
+      if (result && result.length > 0) {
+        console.log(`[ViewerBridge] hierarchy '${hType}' returned ${result.length} nodes`);
+        return collectRuntimeIds(result);
+      }
+    } catch { /* try next */ }
+  }
+
+  console.warn('[ViewerBridge] getAllModelRuntimeIds: no strategy returned results');
+  return [];
+}
+
+function extractRuntimeIdsFromResult(result: unknown): number[] {
+  if (!result) return [];
+
+  // If it's a flat array of numbers (runtimeIds directly)
+  if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'number') {
+    return result as number[];
+  }
+
+  // If it's an array of objects with id/runtimeId
+  if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'object') {
+    const ids: number[] = [];
+    for (const item of result) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Record<string, unknown>;
+      const id = obj.runtimeId ?? obj.id ?? obj.objectRuntimeId;
+      if (typeof id === 'number') ids.push(id);
+      else if (typeof id === 'string' && !isNaN(Number(id))) ids.push(Number(id));
+    }
+    if (ids.length > 0) return ids;
+
+    // Maybe it's hierarchy nodes with children
+    return collectRuntimeIds(result);
+  }
+
+  // If it's an object with a data/items/objects array
+  if (typeof result === 'object' && result !== null) {
+    const obj = result as Record<string, unknown>;
+    for (const key of ['data', 'items', 'objects', 'entities', 'objectRuntimeIds']) {
+      if (Array.isArray(obj[key])) {
+        const sub = extractRuntimeIdsFromResult(obj[key]);
+        if (sub.length > 0) return sub;
+      }
+    }
   }
 
   return [];
@@ -241,27 +296,56 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
     const rootChildren: ModelTreeNode[] = [];
 
     for (const model of models) {
-      const hierarchy = await fetchHierarchy(api, model.id);
-      console.log('[ViewerBridge] hierarchy for', model.name, ':', hierarchy.length, 'nodes');
+      // Get all runtimeIds and their properties to build a flat tree
+      const allIds = await getAllModelRuntimeIds(api, model.id);
+      console.log('[ViewerBridge] getModelTree: got', allIds.length, 'runtimeIds for', model.name);
 
-      type HNode = { runtimeId?: number; id?: number; name?: string; type?: string; class?: string; ifcType?: string; children?: unknown[]; objectCount?: number };
+      const children: ModelTreeNode[] = [];
 
-      const mapNode = (n: HNode, depth: number): ModelTreeNode => ({
-        id: `${model.id}-${n.runtimeId ?? n.id ?? 0}`,
-        name: n.name ?? `Objet ${n.runtimeId ?? n.id ?? ''}`,
-        type: depth === 0 ? 'level' : depth === 1 ? 'room' : 'element',
-        ifcClass: n.class ?? n.ifcType ?? n.type,
-        visible: true,
-        objectCount: n.objectCount,
-        children: (n.children as HNode[] | undefined)?.map(c => mapNode(c, depth + 1)),
-      });
+      if (allIds.length > 0) {
+        // Fetch properties in batches to build tree nodes
+        const batchSize = 50;
+        for (let i = 0; i < allIds.length; i += batchSize) {
+          const batch = allIds.slice(i, i + batchSize);
+          try {
+            const rawArray = await api.viewer.getObjectProperties(model.id, batch);
+            const propsArray = (Array.isArray(rawArray) ? rawArray : [rawArray]) as Array<Record<string, unknown>>;
+
+            for (const obj of propsArray) {
+              if (!obj) continue;
+              const rid = obj.runtimeId ?? obj.id;
+              const product = obj.product as Record<string, unknown> | undefined;
+              const name = String(product?.name ?? obj.name ?? `Objet ${rid}`);
+              const rawClass = String(obj.class ?? obj.type ?? '');
+              const ifcClass = normalizeIfcClass(rawClass);
+
+              // Determine type for tree display
+              const classUpper = ifcClass.toUpperCase();
+              let nodeType: ModelTreeNode['type'] = 'element';
+              if (classUpper.includes('STOREY') || classUpper.includes('BUILDING')) nodeType = 'level';
+              else if (classUpper.includes('SPACE') || classUpper.includes('ROOM')) nodeType = 'room';
+
+              children.push({
+                id: `${model.id}-${rid}`,
+                name,
+                type: nodeType,
+                ifcClass: formatIfcClass(ifcClass),
+                visible: true,
+              });
+            }
+          } catch (e) {
+            console.warn('[ViewerBridge] getModelTree batch props failed:', e);
+          }
+        }
+      }
 
       rootChildren.push({
         id: model.id,
         name: model.name,
         type: 'model',
         visible: true,
-        children: (hierarchy as HNode[]).map(n => mapNode(n, 0)),
+        objectCount: children.length,
+        children,
       });
     }
 
@@ -297,16 +381,13 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
     const allObjects: IFCObject[] = [];
 
     for (const model of models) {
-      const hierarchy = await fetchHierarchy(api, model.id);
-      console.log('[ViewerBridge] getAllIFCObjects hierarchy for', model.name, ':', hierarchy.length, 'nodes');
+      const allRuntimeIds = await getAllModelRuntimeIds(api, model.id);
+      console.log('[ViewerBridge] getAllIFCObjects: got', allRuntimeIds.length, 'runtimeIds for', model.name);
 
-      if (hierarchy.length === 0) {
-        console.warn('[ViewerBridge] No hierarchy nodes for', model.name, '- skipping');
+      if (allRuntimeIds.length === 0) {
+        console.warn('[ViewerBridge] No runtimeIds for', model.name, '- skipping');
         continue;
       }
-
-      const allRuntimeIds = collectRuntimeIds(hierarchy);
-      console.log('[ViewerBridge] total runtimeIds:', allRuntimeIds.length);
 
       const batchSize = 50;
       for (let i = 0; i < allRuntimeIds.length; i += batchSize) {
@@ -691,52 +772,53 @@ export async function toggleModelVisibility(
   visible: boolean,
 ): Promise<void> {
   if (!api) return;
-  console.log('[ViewerBridge] toggleModelVisibility', modelId, visible);
+  console.log('[ViewerBridge] toggleModelVisibility', modelId, 'visible=', visible);
 
-  // List all available viewer methods for debugging
   const viewer = api.viewer as Record<string, unknown>;
-  const methods = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
-  console.log('[ViewerBridge] viewer methods:', methods.join(', '));
 
-  // Strategy 1: setObjectState on entire model (no objectRuntimeIds = whole model)
-  try {
-    await api.viewer.setObjectState(
-      { modelObjectIds: [{ modelId, objectRuntimeIds: [] }] },
-      { visible },
-    );
-    console.log('[ViewerBridge] setObjectState on whole model succeeded');
-    return;
-  } catch (e) {
-    console.warn('[ViewerBridge] setObjectState whole model failed:', e);
+  // Strategy 1: toggleModel (available in TC viewer API)
+  if (typeof viewer.toggleModel === 'function') {
+    try {
+      // toggleModel might just toggle (no visible param), or accept (modelId, show)
+      if (!visible) {
+        // Hide: call toggleModel to unload/hide
+        await (viewer.toggleModel as Function)(modelId);
+        console.log('[ViewerBridge] toggleModel (hide) succeeded');
+        return;
+      } else {
+        // Show: call toggleModel to reload/show
+        await (viewer.toggleModel as Function)(modelId);
+        console.log('[ViewerBridge] toggleModel (show) succeeded');
+        return;
+      }
+    } catch (e) {
+      console.warn('[ViewerBridge] toggleModel failed:', e);
+    }
   }
 
-  // Strategy 2: get all runtimeIds in the model and toggle them individually
+  // Strategy 2: try setObjectState with all objects from getObjects
   try {
-    const hierarchy = await api.viewer.getHierarchyChildren(modelId, [], 'spatial', true) as Array<{ runtimeId: number; children?: unknown[] }>;
-    const allIds = collectRuntimeIds(hierarchy);
-    console.log('[ViewerBridge] toggling', allIds.length, 'objects in model');
+    const allIds = await getAllModelRuntimeIds(api, modelId);
     if (allIds.length > 0) {
       await api.viewer.setObjectState(
         { modelObjectIds: [{ modelId, objectRuntimeIds: allIds }] },
         { visible },
       );
-      console.log('[ViewerBridge] setObjectState on all runtimeIds succeeded');
+      console.log('[ViewerBridge] setObjectState on', allIds.length, 'objects succeeded');
       return;
     }
   } catch (e) {
-    console.warn('[ViewerBridge] setObjectState on runtimeIds failed:', e);
+    console.warn('[ViewerBridge] setObjectState with all objects failed:', e);
   }
 
-  // Strategy 3: try any method that looks like a model toggle
-  for (const method of ['toggleModel', 'setModelState', 'showModel', 'hideModel']) {
-    if (typeof viewer[method] === 'function') {
-      try {
-        await (viewer[method] as Function)(modelId, visible);
-        console.log(`[ViewerBridge] ${method} succeeded`);
-        return;
-      } catch (e) {
-        console.warn(`[ViewerBridge] ${method} failed:`, e);
-      }
+  // Strategy 3: removeModel / placeModel
+  if (!visible && typeof viewer.removeModel === 'function') {
+    try {
+      await (viewer.removeModel as Function)(modelId);
+      console.log('[ViewerBridge] removeModel succeeded');
+      return;
+    } catch (e) {
+      console.warn('[ViewerBridge] removeModel failed:', e);
     }
   }
 
