@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+  <info>
+    <title>Propriétés thermiques RE2020</title>
+    <copyright>BMS Engineering</copyright>
+    <version>1.2</version>
+    <description>Vérifie que les éléments de l'enveloppe thermique possèdent les propriétés requises par la RE2020 (coefficient U, résistance thermique).</description>
+    <author>thermicien@bms-eng.com</author>
+    <date>2026-02-10</date>
+    <purpose>Conformité RE2020</purpose>
+    <milestone>Phase DCE</milestone>
+  </info>
+  <specifications>
+    <specification name="Coefficient U des murs" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Les murs extérieurs doivent avoir un coefficient de transmission thermique U.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCWALL</simpleValue>
+          </name>
+        </entity>
+        <property dataType="IFCBOOLEAN">
+          <propertySet>
+            <simpleValue>Pset_WallCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>IsExternal</simpleValue>
+          </baseName>
+          <value>
+            <simpleValue>TRUE</simpleValue>
+          </value>
+        </property>
+      </applicability>
+      <requirements>
+        <property dataType="IFCREAL" minOccurs="1" instructions="Le coefficient U doit être renseigné (W/m².K).">
+          <propertySet>
+            <simpleValue>Pset_WallCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>ThermalTransmittance</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+
+    <specification name="Coefficient U des fenêtres" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Toutes les fenêtres doivent avoir un coefficient Uw.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCWINDOW</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCREAL" minOccurs="1" instructions="Le coefficient Uw est obligatoire (W/m².K).">
+          <propertySet>
+            <simpleValue>Pset_WindowCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>ThermalTransmittance</simpleValue>
+          </baseName>
+        </property>
+        <property dataType="IFCREAL" minOccurs="1" instructions="Le facteur solaire est requis.">
+          <propertySet>
+            <simpleValue>Pset_WindowCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>SolarHeatGainTransmittance</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+
+    <specification name="Résistance thermique des dalles" ifcVersion="IFC4" minOccurs="0" maxOccurs="unbounded" description="Les dalles sur terre-plein ou extérieures doivent avoir une résistance thermique.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCSLAB</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCREAL" minOccurs="1" instructions="La résistance thermique R est requise (m².K/W).">
+          <propertySet>
+            <simpleValue>Pset_SlabCommon</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>ThermalResistance</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+  </specifications>
+</ids>

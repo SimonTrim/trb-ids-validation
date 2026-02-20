@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+  <info>
+    <title>Exigences DOE — Fiches produits</title>
+    <copyright>BMS Engineering</copyright>
+    <version>1.0</version>
+    <description>Vérifie la présence des propriétés nécessaires au Dossier des Ouvrages Exécutés : référence produit, fabricant, date d'installation sur les équipements techniques.</description>
+    <author>doe-manager@project.com</author>
+    <date>2026-01-20</date>
+    <purpose>DOE / Maintenance</purpose>
+  </info>
+  <specifications>
+    <specification name="Référence produit HVAC" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Les équipements HVAC doivent avoir une référence article renseignée.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCFLOWTERMINAL</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCTEXT" minOccurs="1" instructions="La propriété ArticleNumber doit être renseignée.">
+          <propertySet>
+            <simpleValue>Pset_ManufacturerTypeInformation</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>ArticleNumber</simpleValue>
+          </baseName>
+        </property>
+        <property dataType="IFCTEXT" minOccurs="1" instructions="Le fabricant doit être renseigné.">
+          <propertySet>
+            <simpleValue>Pset_ManufacturerTypeInformation</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>Manufacturer</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+
+    <specification name="Date d'installation" ifcVersion="IFC4" minOccurs="0" maxOccurs="unbounded" description="Les équipements doivent avoir une date d'installation.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCFLOWTERMINAL</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <property dataType="IFCDATE" minOccurs="1" instructions="La date d'installation est requise pour le DOE.">
+          <propertySet>
+            <simpleValue>Pset_Condition</simpleValue>
+          </propertySet>
+          <baseName>
+            <simpleValue>InstallationDate</simpleValue>
+          </baseName>
+        </property>
+      </requirements>
+    </specification>
+
+    <specification name="Matériau des murs" ifcVersion="IFC4" minOccurs="0" maxOccurs="unbounded" description="Tous les murs doivent avoir un matériau assigné.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCWALL</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <material minOccurs="1" instructions="Un matériau doit être assigné à chaque mur."/>
+      </requirements>
+    </specification>
+  </specifications>
+</ids>

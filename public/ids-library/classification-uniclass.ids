@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+  <info>
+    <title>Vérification classification Uniclass</title>
+    <copyright>BMS Engineering</copyright>
+    <version>2.1</version>
+    <description>Vérifie que tous les éléments structurels possèdent une classification Uniclass 2015 valide.</description>
+    <author>bim-manager@project.com</author>
+    <date>2026-02-01</date>
+    <purpose>Classification</purpose>
+  </info>
+  <specifications>
+    <specification name="Classification des poutres" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Les poutres doivent avoir une classification Uniclass 2015.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCBEAM</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <classification minOccurs="1" instructions="Une classification Uniclass 2015 est requise pour toutes les poutres.">
+          <system>
+            <simpleValue>Uniclass 2015</simpleValue>
+          </system>
+          <value>
+            <xs:restriction base="xs:string">
+              <xs:pattern value="^Ss_.*$"/>
+            </xs:restriction>
+          </value>
+        </classification>
+      </requirements>
+    </specification>
+
+    <specification name="Classification des dalles" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Les dalles doivent avoir une classification Uniclass 2015.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCSLAB</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <classification minOccurs="1" instructions="Une classification Uniclass 2015 est requise pour toutes les dalles.">
+          <system>
+            <simpleValue>Uniclass 2015</simpleValue>
+          </system>
+          <value>
+            <xs:restriction base="xs:string">
+              <xs:pattern value="^Ss_.*$"/>
+            </xs:restriction>
+          </value>
+        </classification>
+      </requirements>
+    </specification>
+
+    <specification name="Classification des colonnes" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Les colonnes doivent avoir une classification Uniclass 2015.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCCOLUMN</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <classification minOccurs="1" instructions="Une classification Uniclass 2015 est requise pour toutes les colonnes.">
+          <system>
+            <simpleValue>Uniclass 2015</simpleValue>
+          </system>
+        </classification>
+      </requirements>
+    </specification>
+  </specifications>
+</ids>

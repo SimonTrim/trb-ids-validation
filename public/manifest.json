@@ -1,0 +1,20 @@
+{
+  "name": "BMS - Navigateur et Validateur",
+  "version": "1.0.0",
+  "api": "1.0",
+  "extensions": [
+    {
+      "type": "viewerModule",
+      "id": "trb-ids-validation",
+      "title": "BMS - Gestion DOE & Maintenance",
+      "icon": "https://simontrim.github.io/trb-ids-validation/icon-48.png",
+      "url": "https://simontrim.github.io/trb-ids-validation/index.html",
+      "infoUrl": "https://simontrim.github.io/trb-ids-validation/help.html"
+    }
+  ],
+  "permissions": ["project.read", "files.read", "views.read"],
+  "dependencies": {
+    "@trimble/connect-workspace-api": "^2.0.0"
+  },
+  "description": "Extension de validation IDS, fiches techniques, statistiques et explorateur pour Trimble Connect 3D Viewer"
+}

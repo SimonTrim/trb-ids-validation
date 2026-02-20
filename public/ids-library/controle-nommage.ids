@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ids xmlns="http://standards.buildingsmart.org/IDS" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://standards.buildingsmart.org/IDS http://standards.buildingsmart.org/IDS/1.0/ids.xsd">
+  <info>
+    <title>Contrôles de nommage BIM</title>
+    <copyright>BMS Engineering</copyright>
+    <version>1.0</version>
+    <description>Vérifie les conventions de nommage du bâtiment, des niveaux et des murs selon la charte BIM du projet.</description>
+    <author>bim-manager@bms-eng.com</author>
+    <date>2026-01-15</date>
+    <purpose>Contrôle qualité</purpose>
+  </info>
+  <specifications>
+    <specification name="Nom du bâtiment" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Le bâtiment doit être nommé selon la convention projet.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCBUILDING</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <attribute minOccurs="1" instructions="Le nom du bâtiment doit correspondre exactement à 'Bâtiment A'.">
+          <name>
+            <simpleValue>Name</simpleValue>
+          </name>
+          <value>
+            <simpleValue>Bâtiment A</simpleValue>
+          </value>
+        </attribute>
+      </requirements>
+    </specification>
+
+    <specification name="Préfixe des niveaux" ifcVersion="IFC4" minOccurs="1" maxOccurs="unbounded" description="Tous les niveaux doivent commencer par 'Niveau'.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCBUILDINGSTOREY</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <attribute minOccurs="1" instructions="Le nom doit commencer par 'Niveau'.">
+          <name>
+            <simpleValue>Name</simpleValue>
+          </name>
+          <value>
+            <xs:restriction base="xs:string">
+              <xs:pattern value="^Niveau.*$"/>
+            </xs:restriction>
+          </value>
+        </attribute>
+      </requirements>
+    </specification>
+
+    <specification name="Codage des murs" ifcVersion="IFC4" minOccurs="0" maxOccurs="unbounded" description="Les murs doivent suivre le format EXT-xxx-Matériau.">
+      <applicability>
+        <entity>
+          <name>
+            <simpleValue>IFCWALL</simpleValue>
+          </name>
+        </entity>
+      </applicability>
+      <requirements>
+        <attribute minOccurs="1" instructions="Le nom doit suivre le pattern EXT-xxx-Matériau.">
+          <name>
+            <simpleValue>Name</simpleValue>
+          </name>
+          <value>
+            <xs:restriction base="xs:string">
+              <xs:pattern value="^EXT-\d{3}-.*$"/>
+            </xs:restriction>
+          </value>
+        </attribute>
+      </requirements>
+    </specification>
+  </specifications>
+</ids>
