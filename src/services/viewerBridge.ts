@@ -285,29 +285,51 @@ export async function getSelectedObjectProperties(
     const results: Array<{ name: string; type: string; properties: Record<string, Record<string, string>> }> = [];
 
     for (const sel of selection) {
-      const propsArray = await api.viewer.getObjectProperties(sel.modelId, sel.objectRuntimeIds) as Array<{
-        runtimeId: number;
-        name?: string;
-        type?: string;
-        properties?: Array<{ name: string; properties?: Array<{ name: string; value: string }> }>;
-      }>;
+      if (!sel.modelId || !sel.objectRuntimeIds?.length) continue;
+
+      console.log('[ViewerBridge] getObjectProperties', sel.modelId, sel.objectRuntimeIds);
+      const raw = await api.viewer.getObjectProperties(sel.modelId, sel.objectRuntimeIds);
+      console.log('[ViewerBridge] raw properties:', raw);
+
+      const propsArray = (Array.isArray(raw) ? raw : [raw]) as Array<Record<string, unknown>>;
 
       for (const obj of propsArray) {
+        if (!obj) continue;
         const props: Record<string, Record<string, string>> = {};
-        for (const pset of obj.properties ?? []) {
-          if (pset.properties) {
-            const map: Record<string, string> = {};
-            for (const p of pset.properties) map[p.name] = p.value;
-            props[pset.name] = map;
+
+        // Handle properties as array of property sets
+        const psets = (obj.properties ?? obj.propertySets ?? []) as Array<Record<string, unknown>>;
+        if (Array.isArray(psets)) {
+          for (const pset of psets) {
+            const psetName = (pset.name ?? pset.displayName ?? 'Properties') as string;
+            const innerProps = (pset.properties ?? pset.values ?? []) as Array<Record<string, unknown>>;
+            if (Array.isArray(innerProps)) {
+              const map: Record<string, string> = {};
+              for (const p of innerProps) {
+                const key = (p.name ?? p.displayName ?? '') as string;
+                const val = (p.value ?? p.displayValue ?? p.nominalValue ?? '') as string;
+                if (key) map[key] = String(val);
+              }
+              if (Object.keys(map).length > 0) props[psetName] = map;
+            }
           }
         }
+
+        // Also extract top-level attributes
+        const attrs: Record<string, string> = {};
+        for (const k of ['Name', 'name', 'Description', 'description', 'Tag', 'tag', 'GlobalId', 'globalId']) {
+          if (obj[k] != null) attrs[k] = String(obj[k]);
+        }
+        if (Object.keys(attrs).length > 0) props['Attributes'] = attrs;
+
         results.push({
-          name: obj.name ?? `Object ${obj.runtimeId}`,
-          type: obj.type ?? 'Unknown',
+          name: (obj.name ?? obj.Name ?? `Object ${obj.runtimeId ?? ''}`) as string,
+          type: (obj.type ?? obj.ifcType ?? obj.Type ?? 'Unknown') as string,
           properties: props,
         });
       }
     }
+    console.log('[ViewerBridge] parsed results:', results.length, 'objects');
     return results;
   } catch (err) {
     console.error('getSelectedObjectProperties failed:', err);
