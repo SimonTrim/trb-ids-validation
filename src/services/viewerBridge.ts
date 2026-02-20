@@ -2,6 +2,27 @@
  * Bridge between the Trimble Viewer API and our app's data structures.
  * When api is null (dev mode), returns mock data.
  * When api is available (embedded in TC), uses real viewer data.
+ *
+ * Real TC Viewer API response format (from getObjectProperties):
+ * {
+ *   id: 115,                            // runtimeId
+ *   class: "IFCFLOWTERMINAL",           // IFC class (already prefixed)
+ *   product: {                          // metadata block
+ *     name: "Diffuseur d'air",
+ *     description: "DC 570 S",
+ *     objectType: "Diffuseur d'air",
+ *     organizationName: "...",
+ *     applicationFullName: "...",
+ *     creationDate: "...",
+ *     ...
+ *   },
+ *   properties: [                       // property sets array
+ *     { name: "Pset_MEP", properties: [{ name: "...", value: "...", type: N }] },
+ *     { name: "CalculatedGeometryValues", properties: [...] },
+ *     ...
+ *   ],
+ *   layers?: [...]                      // presentation layers
+ * }
  */
 import type { TrimbleAPI } from '@/hooks/useTrimbleConnect';
 import type { ModelTreeNode, IFCObject, ViewerSelection } from '@/types';
@@ -24,16 +45,14 @@ function normalizeIfcClass(raw: string): string {
 }
 
 function formatIfcClass(upper: string): string {
-  if (!upper.startsWith('IFC')) return upper;
-  return 'Ifc' + upper.slice(3).charAt(0).toUpperCase() + upper.slice(4).toLowerCase();
+  if (!upper || !upper.startsWith('IFC')) return upper;
+  const body = upper.slice(3).toLowerCase();
+  return 'Ifc' + body.charAt(0).toUpperCase() + body.slice(1);
 }
 
 /**
- * Generic property set parser that handles multiple formats returned by TC Viewer API:
- * - Array of { name, properties: [{ name, value }] }
- * - Array of { name, values: [{ name, value }] }
- * - Array of { name, properties: { key: value } }  (object form)
- * - Direct object with { key: value } pairs
+ * Parse the `properties` array from the TC Viewer API.
+ * Format: [{ name: "PsetName", properties: [{ name: "key", value: val, type: N }] }]
  */
 function parsePsets(raw: unknown): Record<string, Record<string, string>> {
   const result: Record<string, Record<string, string>> = {};
@@ -46,7 +65,6 @@ function parsePsets(raw: unknown): Record<string, Record<string, string>> {
     const p = pset as Record<string, unknown>;
     const psetName = String(p.name ?? p.displayName ?? p.Name ?? 'Properties');
 
-    // Inner properties can be array or object
     const inner = p.properties ?? p.values ?? p.attributes ?? p.Properties;
 
     if (Array.isArray(inner)) {
@@ -72,53 +90,78 @@ function parsePsets(raw: unknown): Record<string, Record<string, string>> {
 }
 
 /**
- * Extract a human-readable name from parsed property sets.
- * Tries common IFC property locations.
+ * Extract the `product` block from a TC API response object and convert it
+ * into two virtual property sets that match what TC shows in its own panel:
+ *  - "Reference Object" (GUID, file format, common type, file name)
+ *  - "Product" (product name, description, owning user, dates, etc.)
  */
-function extractNameFromProps(
-  props: Record<string, Record<string, string>>,
-  topLevelName: string | undefined,
-): string {
-  if (topLevelName && topLevelName !== 'Object' && topLevelName.length > 1) return topLevelName;
+function extractProductPsets(obj: Record<string, unknown>): Record<string, Record<string, string>> {
+  const product = obj.product as Record<string, unknown> | undefined;
+  if (!product || typeof product !== 'object') return {};
 
-  const candidates = [
-    ['Product', 'Product Name'],
-    ['Product', 'Name'],
-    ['Identity Data', 'Name'],
-    ['Attributes', 'Name'],
-    ['Reference Object', 'Name'],
-    ['Pset_ManufacturerTypeInformation', 'ModelReference'],
-  ];
-  for (const [pset, key] of candidates) {
-    const val = props[pset]?.[key];
-    if (val && val.length > 0) return val;
+  const result: Record<string, Record<string, string>> = {};
+
+  const refObj: Record<string, string> = {};
+  const productInfo: Record<string, string> = {};
+
+  const refKeys: Record<string, string> = {
+    'objectType': 'Common Type',
+    'applicationIdentifier': 'Application',
+    'applicationFullName': 'Application',
+    'applicationVersion': 'Application Version',
+  };
+
+  const productKeys: Record<string, string> = {
+    'name': 'Product Name',
+    'description': 'Product Description',
+    'objectType': 'Product Object Type',
+    'organizationName': 'Owning User',
+    'creationDate': 'Creation Date',
+    'lastModificationDate': 'Last Modified Date',
+    'state': 'State',
+    'changeAction': 'Change Action',
+  };
+
+  for (const [k, v] of Object.entries(product)) {
+    if (v == null || v === '') continue;
+    const strVal = String(v);
+
+    if (productKeys[k]) {
+      productInfo[productKeys[k]] = strVal;
+    }
+    if (refKeys[k]) {
+      refObj[refKeys[k]] = strVal;
+    }
   }
-  return topLevelName || 'Object';
+
+  // Add the class and id as "Reference Object" fields
+  if (obj.class) refObj['Common Type'] = String(obj.class);
+  if (obj.id != null) refObj['Runtime ID'] = String(obj.id);
+
+  if (Object.keys(refObj).length > 0) result['Reference Object'] = refObj;
+  if (Object.keys(productInfo).length > 0) result['Product'] = productInfo;
+
+  return result;
 }
 
 /**
- * Extract IFC type from parsed property sets when top-level type is missing.
+ * Extract presentation layers from the API response.
  */
-function extractTypeFromProps(
-  props: Record<string, Record<string, string>>,
-  topLevelType: string | undefined,
-): string {
-  if (topLevelType && topLevelType !== 'Unknown' && topLevelType.length > 1) {
-    const norm = normalizeIfcClass(topLevelType);
-    return norm || topLevelType;
-  }
+function extractLayers(obj: Record<string, unknown>): Record<string, string> | null {
+  const layers = obj.layers as unknown[] | undefined;
+  if (!layers || !Array.isArray(layers) || layers.length === 0) return null;
 
-  const candidates = [
-    ['Reference Object', 'Common Type'],
-    ['Reference Object', 'Type'],
-    ['Identity Data', 'Type'],
-    ['Product', 'Common Type'],
-  ];
-  for (const [pset, key] of candidates) {
-    const val = props[pset]?.[key];
-    if (val && val.length > 0) return normalizeIfcClass(val) || val;
+  const map: Record<string, string> = {};
+  for (let i = 0; i < layers.length; i++) {
+    const layer = layers[i];
+    if (typeof layer === 'string') {
+      map[`Layer ${i + 1}`] = layer;
+    } else if (layer && typeof layer === 'object') {
+      const l = layer as Record<string, unknown>;
+      map[String(l.name ?? `Layer ${i + 1}`)] = String(l.value ?? l.name ?? '');
+    }
   }
-  return topLevelType || 'Unknown';
+  return Object.keys(map).length > 0 ? map : null;
 }
 
 // ── Model & Hierarchy ──
@@ -134,10 +177,10 @@ export async function getLoadedModels(api: TrimbleAPI | null): Promise<LoadedMod
   }
   try {
     const models = await api.viewer.getModels('loaded') as Array<{ id: string; name?: string }>;
-    console.log('[ViewerBridge] loaded models:', models);
+    console.log('[ViewerBridge] loaded models:', models?.length, models);
     return models.map((m) => ({ id: m.id, name: m.name ?? m.id }));
   } catch (err) {
-    console.error('getLoadedModels failed:', err);
+    console.error('[ViewerBridge] getLoadedModels failed:', err);
     return [];
   }
 }
@@ -156,16 +199,19 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
         runtimeId: number;
         name?: string;
         type?: string;
+        class?: string;
         ifcType?: string;
         children?: unknown[];
         objectCount?: number;
       }>;
 
+      console.log('[ViewerBridge] hierarchy for', model.name, ':', hierarchy?.length, 'nodes');
+
       const mapNode = (n: typeof hierarchy[0], depth: number): ModelTreeNode => ({
         id: `${model.id}-${n.runtimeId}`,
         name: n.name ?? `Objet ${n.runtimeId}`,
         type: depth === 0 ? 'level' : depth === 1 ? 'room' : 'element',
-        ifcClass: n.ifcType ?? n.type,
+        ifcClass: n.class ?? n.ifcType ?? n.type,
         visible: true,
         objectCount: n.objectCount,
         children: (n.children as typeof hierarchy | undefined)?.map(c => mapNode(c, depth + 1)),
@@ -188,12 +234,12 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
       children: rootChildren,
     }];
   } catch (err) {
-    console.error('getModelTree failed:', err);
+    console.error('[ViewerBridge] getModelTree failed:', err);
     return mockModelTree;
   }
 }
 
-// ── Object Properties (for IDS validation) ──
+// ── Object Properties (for IDS validation + stats + filters) ──
 
 export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObject[]> {
   if (!api) return MOCK_IFC_OBJECTS;
@@ -227,10 +273,10 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
           const rawArray = await api.viewer.getObjectProperties(model.id, batch);
           const propsArray = (Array.isArray(rawArray) ? rawArray : [rawArray]) as Array<Record<string, unknown>>;
 
-          if (i === 0) console.log('[ViewerBridge] sample object props:', safeStringify(propsArray[0], 500));
+          if (i === 0) console.log('[ViewerBridge] sample object:', safeStringify(propsArray[0], 800));
 
           for (const obj of propsArray) {
-            const ifcObj = viewerPropsToIFCObject(obj as never, model.id);
+            const ifcObj = viewerPropsToIFCObject(obj, model.id);
             if (ifcObj) allObjects.push(ifcObj);
           }
         } catch (e) {
@@ -242,7 +288,7 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
     console.log('[ViewerBridge] getAllIFCObjects: parsed', allObjects.length, 'IFC objects');
     return allObjects.length > 0 ? allObjects : MOCK_IFC_OBJECTS;
   } catch (err) {
-    console.error('getAllIFCObjects failed:', err);
+    console.error('[ViewerBridge] getAllIFCObjects failed:', err);
     return MOCK_IFC_OBJECTS;
   }
 }
@@ -264,8 +310,9 @@ function viewerPropsToIFCObject(
 ): IFCObject | null {
   if (!obj) return null;
 
-  const rawType = String(obj.type ?? obj.ifcType ?? obj.Type ?? '');
-  const ifcClass = normalizeIfcClass(rawType);
+  // TC API: IFC class is in obj.class (e.g. "IFCFLOWTERMINAL")
+  const rawClass = String(obj.class ?? obj.type ?? obj.ifcType ?? obj.Type ?? '');
+  const ifcClass = normalizeIfcClass(rawClass);
   if (!ifcClass || ifcClass === 'IFC') return null;
 
   const properties: Record<string, Record<string, string>> = {};
@@ -273,10 +320,19 @@ function viewerPropsToIFCObject(
   const classifications: { system: string; value: string }[] = [];
   const attributes: Record<string, string> = {};
 
-  const rawName = String(obj.name ?? obj.Name ?? '');
+  // TC API: name is in obj.product.name
+  const product = obj.product as Record<string, unknown> | undefined;
+  const rawName = String(product?.name ?? obj.name ?? obj.Name ?? '');
   if (rawName) attributes['Name'] = rawName;
 
+  // Parse standard property sets from obj.properties
   const psets = parsePsets(obj.properties ?? obj.propertySets ?? []);
+
+  // Also extract product block as virtual psets
+  const productPsets = extractProductPsets(obj);
+  for (const [k, v] of Object.entries(productPsets)) {
+    if (!psets[k]) psets[k] = v;
+  }
 
   for (const [psetName, propMap] of Object.entries(psets)) {
     const psetLower = psetName.toLowerCase();
@@ -303,11 +359,9 @@ function viewerPropsToIFCObject(
     properties[psetName] = propMap;
   }
 
-  const displayName = extractNameFromProps({ ...properties, ...psets }, rawName || undefined);
-
   return {
-    id: `${modelId}-${obj.runtimeId ?? ''}`,
-    name: displayName,
+    id: `${modelId}-${obj.id ?? obj.runtimeId ?? ''}`,
+    name: rawName || `Object ${obj.id ?? ''}`,
     ifcClass,
     attributes,
     properties,
@@ -383,14 +437,16 @@ export async function detectModelFilters(api: TrimbleAPI | null): Promise<Detect
     const toSorted = (rec: Record<string, number>) =>
       Object.entries(rec).sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }));
 
-    return {
+    const result = {
       ifcClasses: toSorted(classCount),
       materials: toSorted(matCount),
       levels: toSorted(levelCount),
       propertySets: toSorted(psetCount),
     };
+    console.log('[ViewerBridge] detectModelFilters:', result.ifcClasses.length, 'classes,', result.materials.length, 'mats');
+    return result;
   } catch (err) {
-    console.error('detectModelFilters failed:', err);
+    console.error('[ViewerBridge] detectModelFilters failed:', err);
     return MOCK_FILTERS;
   }
 }
@@ -418,21 +474,24 @@ export async function getSelectedObjectProperties(
       for (const obj of propsArray) {
         if (!obj) continue;
 
-        const props = parsePsets(obj.properties ?? obj.propertySets ?? obj.attributeSets ?? []);
+        // 1. Parse standard property sets from obj.properties
+        const props = parsePsets(obj.properties ?? obj.propertySets ?? []);
 
-        // Also extract top-level attributes into their own pset
-        const attrs: Record<string, string> = {};
-        for (const k of ['Name', 'name', 'Description', 'description', 'Tag', 'tag',
-          'GlobalId', 'globalId', 'GUID (IFC)', 'File Format', 'File Name', 'Common Type']) {
-          if (obj[k] != null) attrs[k] = String(obj[k]);
+        // 2. Extract product block → "Reference Object" + "Product" virtual psets
+        const productPsets = extractProductPsets(obj);
+        for (const [k, v] of Object.entries(productPsets)) {
+          props[k] = v;
         }
-        if (Object.keys(attrs).length > 0) props['Attributes'] = attrs;
 
-        const rawName = (obj.name ?? obj.Name ?? '') as string;
-        const rawType = (obj.type ?? obj.ifcType ?? obj.Type ?? '') as string;
+        // 3. Extract layers → "Presentation Layers" virtual pset
+        const layerMap = extractLayers(obj);
+        if (layerMap) props['Presentation Layers'] = layerMap;
 
-        const name = extractNameFromProps(props, rawName || undefined);
-        const type = extractTypeFromProps(props, rawType || undefined);
+        // 4. Extract name and type
+        const product = obj.product as Record<string, unknown> | undefined;
+        const name = String(product?.name ?? obj.name ?? obj.Name ?? 'Object');
+        const ifcClass = String(obj.class ?? obj.type ?? obj.ifcType ?? 'Unknown');
+        const type = formatIfcClass(normalizeIfcClass(ifcClass));
 
         results.push({ name, type, properties: props });
       }
@@ -440,7 +499,7 @@ export async function getSelectedObjectProperties(
     console.log('[ViewerBridge] parsed results:', results.length, 'objects');
     return results;
   } catch (err) {
-    console.error('getSelectedObjectProperties failed:', err);
+    console.error('[ViewerBridge] getSelectedObjectProperties failed:', err);
     return [];
   }
 }
@@ -463,7 +522,8 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
     let totalVolume = 0;
 
     for (const obj of objects) {
-      classCount[obj.ifcClass] = (classCount[obj.ifcClass] || 0) + 1;
+      const displayClass = formatIfcClass(obj.ifcClass);
+      classCount[displayClass] = (classCount[displayClass] || 0) + 1;
       types.add(obj.ifcClass);
 
       for (const mat of obj.materials) {
@@ -474,7 +534,6 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
         levelNames.push(obj.name);
       }
 
-      // Extract numeric property values for aggregation
       for (const propMap of Object.values(obj.properties)) {
         for (const [k, v] of Object.entries(propMap)) {
           const kl = k.toLowerCase();
@@ -486,8 +545,6 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
       }
     }
 
-    // Assign objects to levels heuristically (by counting objects per IFC storey found in names)
-    // For now, distribute evenly if no storey data
     if (levelNames.length === 0) {
       levelNames.push('Niveau 0', 'Niveau 1', 'Niveau 2');
     }
@@ -527,7 +584,7 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
         : mockStatistics.propertyStats,
     };
   } catch (err) {
-    console.error('computeModelStatistics failed:', err);
+    console.error('[ViewerBridge] computeModelStatistics failed:', err);
     return mockStatistics;
   }
 }
@@ -547,7 +604,7 @@ export async function setObjectVisibility(
       { visible },
     );
   } catch (err) {
-    console.error('setObjectVisibility failed:', err);
+    console.error('[ViewerBridge] setObjectVisibility failed:', err);
   }
 }
 
@@ -557,14 +614,41 @@ export async function toggleModelVisibility(
   visible: boolean,
 ): Promise<void> {
   if (!api) return;
+  console.log('[ViewerBridge] toggleModelVisibility', modelId, visible);
   try {
-    await (api.viewer as unknown as { toggleModel: (id: string, v: boolean) => Promise<void> }).toggleModel(modelId, visible);
-  } catch {
-    try {
-      await api.viewer.setObjectState(undefined, { visible });
-    } catch (err) {
-      console.error('toggleModelVisibility failed:', err);
+    // Try the dedicated toggleModel API first
+    const viewer = api.viewer as Record<string, unknown>;
+    if (typeof viewer.toggleModel === 'function') {
+      await (viewer.toggleModel as (id: string, v: boolean) => Promise<void>)(modelId, visible);
+      return;
     }
+  } catch (e) {
+    console.warn('[ViewerBridge] toggleModel not available, trying setModelState:', e);
+  }
+
+  try {
+    // Fallback: use setModelState if available
+    const viewer = api.viewer as Record<string, unknown>;
+    if (typeof viewer.setModelState === 'function') {
+      await (viewer.setModelState as (ids: string[], state: { visible: boolean }) => Promise<void>)([modelId], { visible });
+      return;
+    }
+  } catch (e) {
+    console.warn('[ViewerBridge] setModelState failed:', e);
+  }
+
+  try {
+    // Last resort: get all runtimeIds in the model and toggle them
+    const hierarchy = await api.viewer.getHierarchyChildren(modelId, [], 'spatial', true) as Array<{ runtimeId: number; children?: unknown[] }>;
+    const allIds = collectRuntimeIds(hierarchy);
+    if (allIds.length > 0) {
+      await api.viewer.setObjectState(
+        { modelObjectIds: [{ modelId, objectRuntimeIds: allIds }] },
+        { visible },
+      );
+    }
+  } catch (err) {
+    console.error('[ViewerBridge] toggleModelVisibility all fallbacks failed:', err);
   }
 }
 
@@ -580,7 +664,7 @@ export async function selectObjectsInViewer(
       'set',
     );
   } catch (err) {
-    console.error('selectObjectsInViewer failed:', err);
+    console.error('[ViewerBridge] selectObjectsInViewer failed:', err);
   }
 }
 
@@ -597,7 +681,7 @@ export async function colorObjectsInViewer(
       { color },
     );
   } catch (err) {
-    console.error('colorObjectsInViewer failed:', err);
+    console.error('[ViewerBridge] colorObjectsInViewer failed:', err);
   }
 }
 
@@ -613,7 +697,7 @@ export async function resetObjectColorInViewer(
       { color: null },
     );
   } catch (err) {
-    console.error('resetObjectColorInViewer failed:', err);
+    console.error('[ViewerBridge] resetObjectColorInViewer failed:', err);
   }
 }
 
@@ -625,6 +709,6 @@ export async function isolateObjectsInViewer(
   try {
     await api.viewer.isolateEntities(entities.map(e => ({ modelObjectIds: [e] })));
   } catch (err) {
-    console.error('isolateObjectsInViewer failed:', err);
+    console.error('[ViewerBridge] isolateObjectsInViewer failed:', err);
   }
 }
