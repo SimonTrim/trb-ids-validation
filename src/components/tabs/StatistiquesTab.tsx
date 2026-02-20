@@ -68,7 +68,7 @@ const defaultTiles: TileConfig[] = [
 ];
 
 export function StatistiquesTab() {
-  const { api } = useTrimbleContext();
+  const { api, modelVersion } = useTrimbleContext();
   const [stats, setStats] = useState<ModelStatistics>(mockStatistics);
   const [statsLoading, setStatsLoading] = useState(true);
   const [tiles, setTiles] = useState<TileConfig[]>(defaultTiles);
@@ -77,16 +77,19 @@ export function StatistiquesTab() {
   const [dragOverId, setDragOverId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!api) return;
     let cancelled = false;
     setStatsLoading(true);
-    computeModelStatistics(api).then((s) => {
-      if (!cancelled) {
-        setStats(s);
-        setStatsLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
-  }, [api]);
+    const timer = setTimeout(() => {
+      computeModelStatistics(api).then((s) => {
+        if (!cancelled) {
+          setStats(s);
+          setStatsLoading(false);
+        }
+      });
+    }, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [api, modelVersion]);
 
   const toggleVisibility = useCallback((id: string) => {
     setTiles((prev) => prev.map((t) => (t.id === id ? { ...t, visible: !t.visible } : t)));

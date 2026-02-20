@@ -3,7 +3,7 @@ import {
   FileText, ExternalLink, ChevronDown, ChevronRight,
   Building2, Layers, Search, Download,
   Link2, FolderOpen, Copy, Check, Loader2, ClipboardList,
-  Maximize2, Minimize2
+  Maximize2, Minimize2, Star
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -124,6 +124,22 @@ export function FicheTechniqueTab() {
   const [expandedPsets, setExpandedPsets] = useState<Set<string>>(new Set());
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [activeDocId, setActiveDocId] = useState<string | null>(null);
+  const [favorites, setFavorites] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem('ftab-favorites');
+      return stored ? new Set(JSON.parse(stored)) : new Set();
+    } catch { return new Set(); }
+  });
+
+  const toggleFavorite = useCallback((psetKey: string) => {
+    setFavorites(prev => {
+      const next = new Set(prev);
+      if (next.has(psetKey)) next.delete(psetKey);
+      else next.add(psetKey);
+      try { localStorage.setItem('ftab-favorites', JSON.stringify([...next])); } catch { /* */ }
+      return next;
+    });
+  }, []);
 
   const selectionCount = useMemo(
     () => selection.reduce((s, sel) => s + sel.objectRuntimeIds.length, 0),
@@ -345,17 +361,31 @@ export function FicheTechniqueTab() {
                   <p className="text-xs">Aucune propriété trouvée</p>
                 </div>
               ) : (
-                Object.entries(filteredProperties).map(([psetName, props]) => (
-                  <PropertySetCard
-                    key={psetName}
-                    name={psetName}
-                    properties={props}
-                    expanded={expandedPsets.has(psetName)}
-                    onToggle={() => togglePset(psetName)}
-                    copiedKey={copiedKey}
-                    onCopy={copyValue}
-                  />
-                ))
+                <>
+                  {/* Favorites section */}
+                  {favorites.size > 0 && (
+                    <FavoritesSection
+                      allProperties={filteredProperties}
+                      favorites={favorites}
+                      onToggleFavorite={toggleFavorite}
+                      copiedKey={copiedKey}
+                      onCopy={copyValue}
+                    />
+                  )}
+                  {Object.entries(filteredProperties).map(([psetName, props]) => (
+                    <PropertySetCard
+                      key={psetName}
+                      name={psetName}
+                      properties={props}
+                      expanded={expandedPsets.has(psetName)}
+                      onToggle={() => togglePset(psetName)}
+                      copiedKey={copiedKey}
+                      onCopy={copyValue}
+                      favorites={favorites}
+                      onToggleFavorite={toggleFavorite}
+                    />
+                  ))}
+                </>
               )}
             </div>
           </ScrollArea>
@@ -540,6 +570,66 @@ function DocumentsView({
 
 // ── Property Set Card ──
 
+// ── Favorites Section ──
+
+function FavoritesSection({
+  allProperties,
+  favorites,
+  onToggleFavorite,
+  copiedKey,
+  onCopy,
+}: {
+  allProperties: Record<string, Record<string, string>>;
+  favorites: Set<string>;
+  onToggleFavorite: (key: string) => void;
+  copiedKey: string | null;
+  onCopy: (key: string, value: string) => void;
+}) {
+  const favEntries: Array<{ pset: string; key: string; value: string; uniqueKey: string }> = [];
+  for (const [pset, props] of Object.entries(allProperties)) {
+    for (const [key, value] of Object.entries(props)) {
+      const uk = `${pset}.${key}`;
+      if (favorites.has(uk)) favEntries.push({ pset, key, value, uniqueKey: uk });
+    }
+  }
+  if (favEntries.length === 0) return null;
+
+  return (
+    <Card className="shadow-sm border-amber-200 dark:border-amber-800 mb-2">
+      <div className="flex items-center gap-2 px-3 py-2">
+        <Star className="size-3.5 text-amber-500 fill-amber-500 shrink-0" />
+        <span className="text-xs font-semibold flex-1">Favoris</span>
+        <Badge variant="secondary" className="text-[9px] px-1 py-0">{favEntries.length}</Badge>
+      </div>
+      <div className="px-3 pb-2">
+        <Separator className="mb-1.5" />
+        <div className="space-y-0">
+          {favEntries.map(({ pset, key, value, uniqueKey }) => (
+            <div key={uniqueKey} className="flex items-center gap-2 py-1.5 px-1 rounded hover:bg-accent/40 group transition-colors">
+              <button onClick={() => onToggleFavorite(uniqueKey)} className="shrink-0 p-0.5" title="Retirer des favoris">
+                <Star className="size-3 text-amber-500 fill-amber-500" />
+              </button>
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] text-muted-foreground">{pset} &rsaquo; {key}</p>
+                <p className="text-xs font-medium truncate">{value}</p>
+              </div>
+              <button
+                onClick={() => onCopy(uniqueKey, value)}
+                className="shrink-0 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-accent transition-all"
+                title="Copier la valeur"
+              >
+                {copiedKey === uniqueKey ? <Check className="size-3 text-emerald-500" /> : <Copy className="size-3 text-muted-foreground" />}
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ── Property Set Card ──
+
 function PropertySetCard({
   name,
   properties,
@@ -547,6 +637,8 @@ function PropertySetCard({
   onToggle,
   copiedKey,
   onCopy,
+  favorites,
+  onToggleFavorite,
 }: {
   name: string;
   properties: Record<string, string>;
@@ -554,6 +646,8 @@ function PropertySetCard({
   onToggle: () => void;
   copiedKey: string | null;
   onCopy: (key: string, value: string) => void;
+  favorites: Set<string>;
+  onToggleFavorite: (key: string) => void;
 }) {
   const propCount = Object.keys(properties).length;
   const hasUrls = Object.values(properties).some(isUrlOrPath);
@@ -583,12 +677,20 @@ function PropertySetCard({
               const isUrl = isUrlOrPath(value);
               const uniqueKey = `${name}.${key}`;
               const isCopied = copiedKey === uniqueKey;
+              const isFav = favorites.has(uniqueKey);
 
               return (
                 <div
                   key={key}
                   className="flex items-center gap-2 py-1.5 px-1 rounded hover:bg-accent/40 group transition-colors"
                 >
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onToggleFavorite(uniqueKey); }}
+                    className="shrink-0 p-0.5 rounded hover:bg-accent transition-all"
+                    title={isFav ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+                  >
+                    <Star className={cn("size-3", isFav ? "text-amber-500 fill-amber-500" : "text-muted-foreground/30 group-hover:text-muted-foreground")} />
+                  </button>
                   <div className="flex-1 min-w-0">
                     <p className="text-[10px] text-muted-foreground">{key}</p>
                     {isUrl ? (

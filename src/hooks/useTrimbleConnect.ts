@@ -50,6 +50,7 @@ export interface TrimbleConnectState {
   accessToken: string | null;
   selection: ViewerSelection[];
   api: TrimbleAPI | null;
+  modelVersion: number;
 }
 
 // ── React Context ──
@@ -61,6 +62,7 @@ const TrimbleContext = createContext<TrimbleConnectState>({
   accessToken: null,
   selection: [],
   api: null,
+  modelVersion: 0,
 });
 
 export const TrimbleProvider = TrimbleContext.Provider;
@@ -113,6 +115,7 @@ export function useTrimbleConnect() {
     accessToken: null,
     selection: [],
     api: null,
+    modelVersion: 0,
   });
   const apiRef = useRef<TrimbleAPI | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -127,6 +130,13 @@ export function useTrimbleConnect() {
       case 'viewer.selectionChanged': {
         const selection = normalizeSelection(data);
         setState((s) => ({ ...s, selection }));
+        break;
+      }
+      case 'viewer.onModelStateChanged':
+      case 'viewer.modelStateChanged':
+      case 'viewer.onPresentationChanged': {
+        console.log('[TC Event] Model state changed, incrementing modelVersion');
+        setState((s) => ({ ...s, modelVersion: s.modelVersion + 1 }));
         break;
       }
     }
@@ -205,6 +215,7 @@ export function useTrimbleConnect() {
             accessToken,
             selection: initialSelection,
             api,
+            modelVersion: 1,
           });
         })
         .catch((err) => {
@@ -220,6 +231,7 @@ export function useTrimbleConnect() {
         accessToken: 'mock-token',
         selection: [],
         api: null,
+        modelVersion: 0,
       });
     }
   }, [handleEvent]);

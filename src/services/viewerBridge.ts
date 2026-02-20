@@ -245,17 +245,27 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
   if (!api) return MOCK_IFC_OBJECTS;
 
   try {
-    const models = await getLoadedModels(api);
+    let models = await getLoadedModels(api);
     console.log('[ViewerBridge] getAllIFCObjects: models count =', models.length);
-    if (models.length === 0) return MOCK_IFC_OBJECTS;
+    // Retry once after 2s if no models loaded yet
+    if (models.length === 0) {
+      await new Promise(r => setTimeout(r, 2000));
+      models = await getLoadedModels(api);
+      console.log('[ViewerBridge] getAllIFCObjects retry: models count =', models.length);
+    }
+    if (models.length === 0) return [];
 
     const allObjects: IFCObject[] = [];
 
     for (const model of models) {
-      let hierarchy: Array<{ runtimeId: number; children?: unknown[] }>;
+      let hierarchy: unknown[];
       try {
-        hierarchy = await api.viewer.getHierarchyChildren(model.id, [], 'spatial', true) as typeof hierarchy;
+        hierarchy = await api.viewer.getHierarchyChildren(model.id, [], 'spatial', true) as unknown[];
         console.log('[ViewerBridge] hierarchy nodes for', model.name, ':', hierarchy?.length ?? 0);
+        if (hierarchy?.length > 0) {
+          console.log('[ViewerBridge] hierarchy[0] keys:', Object.keys(hierarchy[0] as Record<string, unknown>).join(', '));
+          console.log('[ViewerBridge] hierarchy[0] sample:', safeStringify(hierarchy[0], 400));
+        }
       } catch (e) {
         console.error('[ViewerBridge] getHierarchyChildren failed for', model.id, e);
         continue;
@@ -286,19 +296,23 @@ export async function getAllIFCObjects(api: TrimbleAPI | null): Promise<IFCObjec
     }
 
     console.log('[ViewerBridge] getAllIFCObjects: parsed', allObjects.length, 'IFC objects');
-    return allObjects.length > 0 ? allObjects : MOCK_IFC_OBJECTS;
+    return allObjects;
   } catch (err) {
     console.error('[ViewerBridge] getAllIFCObjects failed:', err);
-    return MOCK_IFC_OBJECTS;
+    return [];
   }
 }
 
-function collectRuntimeIds(nodes: Array<{ runtimeId: number; children?: unknown[] }>): number[] {
+function collectRuntimeIds(nodes: unknown[]): number[] {
   const ids: number[] = [];
   for (const n of nodes) {
-    if (n.runtimeId != null) ids.push(n.runtimeId);
-    if (n.children) {
-      ids.push(...collectRuntimeIds(n.children as typeof nodes));
+    if (!n || typeof n !== 'object') continue;
+    const node = n as Record<string, unknown>;
+    // Handle both runtimeId and id fields
+    const rid = node.runtimeId ?? node.id;
+    if (rid != null && typeof rid === 'number') ids.push(rid);
+    if (Array.isArray(node.children)) {
+      ids.push(...collectRuntimeIds(node.children));
     }
   }
   return ids;
@@ -411,7 +425,10 @@ export async function detectModelFilters(api: TrimbleAPI | null): Promise<Detect
 
   try {
     const objects = await getAllIFCObjects(api);
-    if (objects.length === 0) return MOCK_FILTERS;
+    console.log('[ViewerBridge] detectModelFilters: got', objects.length, 'objects');
+    if (objects.length === 0) {
+      return { ifcClasses: [], materials: [], levels: [], propertySets: [] };
+    }
 
     const classCount: Record<string, number> = {};
     const matCount: Record<string, number> = {};
@@ -419,14 +436,26 @@ export async function detectModelFilters(api: TrimbleAPI | null): Promise<Detect
     const psetCount: Record<string, number> = {};
 
     for (const obj of objects) {
-      classCount[formatIfcClass(obj.ifcClass)] = (classCount[formatIfcClass(obj.ifcClass)] || 0) + 1;
+      const displayClass = formatIfcClass(obj.ifcClass);
+      classCount[displayClass] = (classCount[displayClass] || 0) + 1;
 
       for (const mat of obj.materials) {
         matCount[mat] = (matCount[mat] || 0) + 1;
       }
 
-      if (obj.ifcClass === 'IFCBUILDINGSTOREY') {
-        levelCount[obj.name] = (levelCount[obj.name] || 0);
+      // Detect levels from IfcBuildingStorey objects
+      if (obj.ifcClass.toUpperCase().includes('STOREY')) {
+        levelCount[obj.name] = 0;
+      }
+
+      // Also detect levels from "storey" or "level" or "étage" property values
+      for (const propMap of Object.values(obj.properties)) {
+        for (const [k, v] of Object.entries(propMap)) {
+          const kl = k.toLowerCase();
+          if ((kl.includes('storey') || kl.includes('level') || kl.includes('étage')) && v) {
+            levelCount[v] = (levelCount[v] || 0) + 1;
+          }
+        }
       }
 
       for (const psetName of Object.keys(obj.properties)) {
@@ -443,11 +472,11 @@ export async function detectModelFilters(api: TrimbleAPI | null): Promise<Detect
       levels: toSorted(levelCount),
       propertySets: toSorted(psetCount),
     };
-    console.log('[ViewerBridge] detectModelFilters:', result.ifcClasses.length, 'classes,', result.materials.length, 'mats');
+    console.log('[ViewerBridge] detectModelFilters result:', result.ifcClasses.length, 'classes,', result.materials.length, 'mats,', result.levels.length, 'levels,', result.propertySets.length, 'psets');
     return result;
   } catch (err) {
     console.error('[ViewerBridge] detectModelFilters failed:', err);
-    return MOCK_FILTERS;
+    return { ifcClasses: [], materials: [], levels: [], propertySets: [] };
   }
 }
 
@@ -511,7 +540,13 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
 
   try {
     const objects = await getAllIFCObjects(api);
-    if (objects.length === 0) return mockStatistics;
+    if (objects.length === 0) {
+      return {
+        totalElements: 0, totalLevels: 0, totalTypes: 0,
+        ifcClassDistribution: [], levelDistribution: [], materialDistribution: [],
+        propertyStats: [],
+      };
+    }
 
     const classCount: Record<string, number> = {};
     const materialCount: Record<string, number> = {};
@@ -545,12 +580,16 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
       }
     }
 
-    if (levelNames.length === 0) {
-      levelNames.push('Niveau 0', 'Niveau 1', 'Niveau 2');
-    }
-    const perLevel = Math.ceil(objects.length / levelNames.length);
-    for (const lv of levelNames) {
-      levelObjectCount[lv] = (levelObjectCount[lv] || 0) + perLevel;
+    // If no IfcBuildingStorey found, don't fake levels
+    if (levelNames.length > 0) {
+      // Distribute non-storey objects proportionally across levels
+      const nonStoreyCount = objects.length - levelNames.length;
+      if (nonStoreyCount > 0) {
+        const perLevel = Math.ceil(nonStoreyCount / levelNames.length);
+        for (const lv of levelNames) {
+          levelObjectCount[lv] = (levelObjectCount[lv] || 0) + perLevel;
+        }
+      }
     }
 
     const COLORS = ['#0063a3', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#f97316', '#ec4899'];
@@ -569,6 +608,13 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
       count: levelObjectCount[name] ?? 0,
     }));
 
+    console.log('[ViewerBridge] stats computed: area=', totalArea, 'volume=', totalVolume, 'materials=', Object.keys(materialCount).length);
+
+    const propertyStats = [
+      { name: 'Surface totale', value: `${totalArea > 0 ? Math.round(totalArea) : '—'} m²`, icon: 'area' },
+      { name: 'Volume total', value: `${totalVolume > 0 ? Math.round(totalVolume) : '—'} m³`, icon: 'volume' },
+    ];
+
     return {
       totalElements: objects.length,
       totalLevels: levelNames.length,
@@ -576,16 +622,15 @@ export async function computeModelStatistics(api: TrimbleAPI | null) {
       ifcClassDistribution,
       levelDistribution,
       materialDistribution,
-      propertyStats: totalArea > 0 || totalVolume > 0
-        ? [
-            { name: 'Surface totale', value: `${Math.round(totalArea)} m²`, icon: 'area' },
-            { name: 'Volume total', value: `${Math.round(totalVolume)} m³`, icon: 'volume' },
-          ]
-        : mockStatistics.propertyStats,
+      propertyStats,
     };
   } catch (err) {
     console.error('[ViewerBridge] computeModelStatistics failed:', err);
-    return mockStatistics;
+    return {
+      totalElements: 0, totalLevels: 0, totalTypes: 0,
+      ifcClassDistribution: [], levelDistribution: [], materialDistribution: [],
+      propertyStats: [],
+    };
   }
 }
 
@@ -615,41 +660,55 @@ export async function toggleModelVisibility(
 ): Promise<void> {
   if (!api) return;
   console.log('[ViewerBridge] toggleModelVisibility', modelId, visible);
+
+  // List all available viewer methods for debugging
+  const viewer = api.viewer as Record<string, unknown>;
+  const methods = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
+  console.log('[ViewerBridge] viewer methods:', methods.join(', '));
+
+  // Strategy 1: setObjectState on entire model (no objectRuntimeIds = whole model)
   try {
-    // Try the dedicated toggleModel API first
-    const viewer = api.viewer as Record<string, unknown>;
-    if (typeof viewer.toggleModel === 'function') {
-      await (viewer.toggleModel as (id: string, v: boolean) => Promise<void>)(modelId, visible);
-      return;
-    }
+    await api.viewer.setObjectState(
+      { modelObjectIds: [{ modelId, objectRuntimeIds: [] }] },
+      { visible },
+    );
+    console.log('[ViewerBridge] setObjectState on whole model succeeded');
+    return;
   } catch (e) {
-    console.warn('[ViewerBridge] toggleModel not available, trying setModelState:', e);
+    console.warn('[ViewerBridge] setObjectState whole model failed:', e);
   }
 
+  // Strategy 2: get all runtimeIds in the model and toggle them individually
   try {
-    // Fallback: use setModelState if available
-    const viewer = api.viewer as Record<string, unknown>;
-    if (typeof viewer.setModelState === 'function') {
-      await (viewer.setModelState as (ids: string[], state: { visible: boolean }) => Promise<void>)([modelId], { visible });
-      return;
-    }
-  } catch (e) {
-    console.warn('[ViewerBridge] setModelState failed:', e);
-  }
-
-  try {
-    // Last resort: get all runtimeIds in the model and toggle them
     const hierarchy = await api.viewer.getHierarchyChildren(modelId, [], 'spatial', true) as Array<{ runtimeId: number; children?: unknown[] }>;
     const allIds = collectRuntimeIds(hierarchy);
+    console.log('[ViewerBridge] toggling', allIds.length, 'objects in model');
     if (allIds.length > 0) {
       await api.viewer.setObjectState(
         { modelObjectIds: [{ modelId, objectRuntimeIds: allIds }] },
         { visible },
       );
+      console.log('[ViewerBridge] setObjectState on all runtimeIds succeeded');
+      return;
     }
-  } catch (err) {
-    console.error('[ViewerBridge] toggleModelVisibility all fallbacks failed:', err);
+  } catch (e) {
+    console.warn('[ViewerBridge] setObjectState on runtimeIds failed:', e);
   }
+
+  // Strategy 3: try any method that looks like a model toggle
+  for (const method of ['toggleModel', 'setModelState', 'showModel', 'hideModel']) {
+    if (typeof viewer[method] === 'function') {
+      try {
+        await (viewer[method] as Function)(modelId, visible);
+        console.log(`[ViewerBridge] ${method} succeeded`);
+        return;
+      } catch (e) {
+        console.warn(`[ViewerBridge] ${method} failed:`, e);
+      }
+    }
+  }
+
+  console.error('[ViewerBridge] toggleModelVisibility: no method worked');
 }
 
 export async function selectObjectsInViewer(

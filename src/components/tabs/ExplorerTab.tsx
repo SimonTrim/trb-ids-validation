@@ -300,7 +300,7 @@ function countNodes(nodes: ModelTreeNode[]): number {
 // ── Main Component ──
 
 export function ExplorerTab() {
-  const { api, selection } = useTrimbleContext();
+  const { api, selection, modelVersion } = useTrimbleContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [groupMode, setGroupMode] = useState<GroupMode>('building');
   const [treeData, setTreeData] = useState<ModelTreeNode[]>([]);
@@ -316,7 +316,7 @@ export function ExplorerTab() {
   const [materialFilters, setMaterialFilters] = useState<FilterItem[]>([]);
   const [levelFilters, setLevelFilters] = useState<FilterItem[]>([]);
 
-  // Load tree
+  // Load tree (re-triggers when models change)
   useEffect(() => {
     let cancelled = false;
     setTreeLoading(true);
@@ -327,23 +327,27 @@ export function ExplorerTab() {
       }
     });
     return () => { cancelled = true; };
-  }, [api]);
+  }, [api, modelVersion]);
 
-  // Detect filters from model
+  // Detect filters from model (re-triggers when models change)
   useEffect(() => {
+    if (!api) return;
     let cancelled = false;
     setFiltersLoading(true);
-    detectModelFilters(api).then((filters: DetectedFilters) => {
-      if (!cancelled) {
-        setIfcFilters(filters.ifcClasses.map(f => ({ ...f, checked: true })));
-        setMaterialFilters(filters.materials.map(f => ({ ...f, checked: true })));
-        setLevelFilters(filters.levels.map(f => ({ ...f, checked: true })));
-        setDetectedPsets(filters.propertySets);
-        setFiltersLoading(false);
-      }
-    });
-    return () => { cancelled = true; };
-  }, [api]);
+    // Small delay to ensure models are fully loaded after state change
+    const timer = setTimeout(() => {
+      detectModelFilters(api).then((filters: DetectedFilters) => {
+        if (!cancelled) {
+          setIfcFilters(filters.ifcClasses.map(f => ({ ...f, checked: true })));
+          setMaterialFilters(filters.materials.map(f => ({ ...f, checked: true })));
+          setLevelFilters(filters.levels.map(f => ({ ...f, checked: true })));
+          setDetectedPsets(filters.propertySets);
+          setFiltersLoading(false);
+        }
+      });
+    }, 1000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [api, modelVersion]);
 
   const totalNodeCount = useMemo(() => countNodes(treeData), [treeData]);
 
