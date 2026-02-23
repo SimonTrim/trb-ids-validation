@@ -196,44 +196,116 @@ async function getAllModelRuntimeIds(
   modelId: string,
 ): Promise<number[]> {
   const viewer = api.viewer as Record<string, unknown>;
+  const methods = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
+  console.log('[ViewerBridge] getAllModelRuntimeIds for', modelId);
 
-  // Strategy 1: getObjects(modelId) — returns all objects in the model
-  if (typeof viewer.getObjects === 'function') {
-    try {
-      const result = await (viewer.getObjects as Function)(modelId);
-      console.log('[ViewerBridge] getObjects result type:', typeof result, Array.isArray(result) ? `length=${result.length}` : '');
-      if (result) {
-        console.log('[ViewerBridge] getObjects sample:', safeStringify(Array.isArray(result) ? result.slice(0, 3) : result, 500));
+  // Strategy 1: getObjects → returns objectIds (strings), then convert
+  try {
+    const objResult = await (viewer.getObjects as Function)(modelId);
+    console.log('[ViewerBridge] getObjects raw:', typeof objResult, safeStringify(objResult, 300));
+
+    if (objResult) {
+      // getObjects might return string[] (objectIds) or number[] (runtimeIds)
+      let objectIds: string[] = [];
+      let runtimeIds: number[] = [];
+
+      if (Array.isArray(objResult)) {
+        if (objResult.length > 0) {
+          if (typeof objResult[0] === 'string') {
+            objectIds = objResult;
+          } else if (typeof objResult[0] === 'number') {
+            runtimeIds = objResult;
+          } else if (typeof objResult[0] === 'object') {
+            // Array of objects
+            for (const item of objResult) {
+              const o = item as Record<string, unknown>;
+              if (typeof o.id === 'string') objectIds.push(o.id as string);
+              else if (typeof o.id === 'number') runtimeIds.push(o.id);
+              if (typeof o.runtimeId === 'number') runtimeIds.push(o.runtimeId);
+            }
+          }
+        }
       }
-      const ids = extractRuntimeIdsFromResult(result);
-      if (ids.length > 0) {
-        console.log('[ViewerBridge] getObjects extracted', ids.length, 'runtimeIds');
-        return ids;
+
+      console.log('[ViewerBridge] getObjects parsed:', objectIds.length, 'objectIds,', runtimeIds.length, 'runtimeIds');
+
+      // If we got objectIds, convert them to runtimeIds
+      if (objectIds.length > 0 && runtimeIds.length === 0) {
+        try {
+          const converted = await api.viewer.convertToObjectRuntimeIds(modelId, objectIds);
+          console.log('[ViewerBridge] convertToObjectRuntimeIds:', safeStringify(converted, 200));
+          if (Array.isArray(converted) && converted.length > 0) {
+            runtimeIds = converted.filter((n: unknown) => typeof n === 'number') as number[];
+          }
+        } catch (e) {
+          console.warn('[ViewerBridge] convertToObjectRuntimeIds failed:', e);
+        }
       }
-    } catch (e) {
-      console.warn('[ViewerBridge] getObjects failed:', e);
+
+      if (runtimeIds.length > 0) {
+        console.log('[ViewerBridge] getObjects strategy yielded', runtimeIds.length, 'runtimeIds');
+        return runtimeIds;
+      }
     }
+  } catch (e) {
+    console.warn('[ViewerBridge] getObjects strategy failed:', e);
   }
 
-  // Strategy 2: getEntities(modelId)
-  if (typeof viewer.getEntities === 'function') {
-    try {
-      const result = await (viewer.getEntities as Function)(modelId);
-      console.log('[ViewerBridge] getEntities result type:', typeof result, Array.isArray(result) ? `length=${result.length}` : '');
-      if (result) {
-        console.log('[ViewerBridge] getEntities sample:', safeStringify(Array.isArray(result) ? result.slice(0, 3) : result, 500));
+  // Strategy 2: getEntities
+  try {
+    const entResult = await (viewer.getEntities as Function)(modelId);
+    console.log('[ViewerBridge] getEntities raw:', typeof entResult, safeStringify(entResult, 300));
+    if (Array.isArray(entResult) && entResult.length > 0) {
+      const ids: number[] = [];
+      for (const item of entResult) {
+        if (typeof item === 'number') ids.push(item);
+        else if (typeof item === 'object' && item) {
+          const o = item as Record<string, unknown>;
+          const rid = o.runtimeId ?? o.id;
+          if (typeof rid === 'number') ids.push(rid);
+        }
       }
-      const ids = extractRuntimeIdsFromResult(result);
       if (ids.length > 0) {
-        console.log('[ViewerBridge] getEntities extracted', ids.length, 'runtimeIds');
+        console.log('[ViewerBridge] getEntities yielded', ids.length, 'runtimeIds');
         return ids;
       }
-    } catch (e) {
-      console.warn('[ViewerBridge] getEntities failed:', e);
     }
+  } catch (e) {
+    console.warn('[ViewerBridge] getEntities failed:', e);
   }
 
-  // Strategy 3: getHierarchyChildren with different types
+  // Strategy 3: Brute-force probe — try batches of IDs to discover valid ones
+  console.log('[ViewerBridge] trying brute-force runtimeId discovery...');
+  try {
+    const validIds: number[] = [];
+    const probeMax = 1000;
+    const probeBatch = 100;
+
+    for (let start = 0; start < probeMax; start += probeBatch) {
+      const batch = Array.from({ length: probeBatch }, (_, i) => start + i);
+      try {
+        const rawArray = await api.viewer.getObjectProperties(modelId, batch);
+        if (Array.isArray(rawArray)) {
+          for (const obj of rawArray) {
+            if (obj && typeof obj === 'object') {
+              const o = obj as Record<string, unknown>;
+              const rid = o.id ?? o.runtimeId;
+              if (typeof rid === 'number') validIds.push(rid);
+            }
+          }
+        }
+      } catch { /* batch failed, continue */ }
+    }
+
+    if (validIds.length > 0) {
+      console.log('[ViewerBridge] brute-force found', validIds.length, 'valid runtimeIds');
+      return validIds;
+    }
+  } catch (e) {
+    console.warn('[ViewerBridge] brute-force probe failed:', e);
+  }
+
+  // Strategy 4: getHierarchyChildren with different types
   for (const hType of ['spatial', 'containment', 'storey', 'type', '']) {
     try {
       const result = await api.viewer.getHierarchyChildren(modelId, [], hType, true) as unknown[];
@@ -245,44 +317,6 @@ async function getAllModelRuntimeIds(
   }
 
   console.warn('[ViewerBridge] getAllModelRuntimeIds: no strategy returned results');
-  return [];
-}
-
-function extractRuntimeIdsFromResult(result: unknown): number[] {
-  if (!result) return [];
-
-  // If it's a flat array of numbers (runtimeIds directly)
-  if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'number') {
-    return result as number[];
-  }
-
-  // If it's an array of objects with id/runtimeId
-  if (Array.isArray(result) && result.length > 0 && typeof result[0] === 'object') {
-    const ids: number[] = [];
-    for (const item of result) {
-      if (!item || typeof item !== 'object') continue;
-      const obj = item as Record<string, unknown>;
-      const id = obj.runtimeId ?? obj.id ?? obj.objectRuntimeId;
-      if (typeof id === 'number') ids.push(id);
-      else if (typeof id === 'string' && !isNaN(Number(id))) ids.push(Number(id));
-    }
-    if (ids.length > 0) return ids;
-
-    // Maybe it's hierarchy nodes with children
-    return collectRuntimeIds(result);
-  }
-
-  // If it's an object with a data/items/objects array
-  if (typeof result === 'object' && result !== null) {
-    const obj = result as Record<string, unknown>;
-    for (const key of ['data', 'items', 'objects', 'entities', 'objectRuntimeIds']) {
-      if (Array.isArray(obj[key])) {
-        const sub = extractRuntimeIdsFromResult(obj[key]);
-        if (sub.length > 0) return sub;
-      }
-    }
-  }
-
   return [];
 }
 

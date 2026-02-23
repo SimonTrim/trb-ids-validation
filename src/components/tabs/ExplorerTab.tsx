@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import {
   Search, ChevronRight, ChevronDown, Eye, EyeOff,
   Building2, Layers, FolderOpen, Box, LayoutGrid,
@@ -316,12 +316,22 @@ export function ExplorerTab() {
   const [materialFilters, setMaterialFilters] = useState<FilterItem[]>([]);
   const [levelFilters, setLevelFilters] = useState<FilterItem[]>([]);
 
-  // Load tree (re-triggers when models change)
+  // Track models we've toggled off (to keep them in tree)
+  const toggledOffModelsRef = useRef<Set<string>>(new Set());
+  const treeLoadedRef = useRef(false);
+
+  // Load tree (re-triggers when models change, but preserves toggled-off models)
   useEffect(() => {
     let cancelled = false;
     setTreeLoading(true);
     getModelTree(api).then((tree) => {
       if (!cancelled) {
+        // If tree came back empty but we have existing data, keep it (model was toggled off)
+        if (tree.length === 0 || (tree[0]?.children?.length === 0 && treeLoadedRef.current)) {
+          setTreeLoading(false);
+          return;
+        }
+        treeLoadedRef.current = true;
         setTreeData(tree);
         setTreeLoading(false);
       }
@@ -329,25 +339,33 @@ export function ExplorerTab() {
     return () => { cancelled = true; };
   }, [api, modelVersion]);
 
-  // Detect filters from model (re-triggers when models change)
+  // Detect filters from model (only on initial load, not on toggle events)
   useEffect(() => {
     if (!api) return;
     let cancelled = false;
     setFiltersLoading(true);
-    // Small delay to ensure models are fully loaded after state change
     const timer = setTimeout(() => {
       detectModelFilters(api).then((filters: DetectedFilters) => {
         if (!cancelled) {
-          setIfcFilters(filters.ifcClasses.map(f => ({ ...f, checked: true })));
-          setMaterialFilters(filters.materials.map(f => ({ ...f, checked: true })));
-          setLevelFilters(filters.levels.map(f => ({ ...f, checked: true })));
-          setDetectedPsets(filters.propertySets);
+          // Only update filters if we got real data
+          if (filters.ifcClasses.length > 0) {
+            setIfcFilters(filters.ifcClasses.map(f => ({ ...f, checked: true })));
+          }
+          if (filters.materials.length > 0) {
+            setMaterialFilters(filters.materials.map(f => ({ ...f, checked: true })));
+          }
+          if (filters.levels.length > 0) {
+            setLevelFilters(filters.levels.map(f => ({ ...f, checked: true })));
+          }
+          if (filters.propertySets.length > 0) {
+            setDetectedPsets(filters.propertySets);
+          }
           setFiltersLoading(false);
         }
       });
-    }, 1000);
+    }, 2000);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [api, modelVersion]);
+  }, [api]);
 
   const totalNodeCount = useMemo(() => countNodes(treeData), [treeData]);
 
@@ -375,11 +393,12 @@ export function ExplorerTab() {
 
     if (api && targetNode) {
       const tn = targetNode as ModelTreeNode;
-      // tn.visible is already the NEW value (toggled above)
       const newVisible = tn.visible;
       console.log('[Explorer] toggleVisibility', tn.id, 'type=', tn.type, 'newVisible=', newVisible);
 
       if (tn.type === 'model') {
+        if (!newVisible) toggledOffModelsRef.current.add(tn.id);
+        else toggledOffModelsRef.current.delete(tn.id);
         toggleModelVisibility(api, tn.id, newVisible);
       } else {
         const modelId = getModelIdFromNode(tn, treeData);
