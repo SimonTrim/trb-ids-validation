@@ -199,47 +199,22 @@ async function getAllModelRuntimeIds(
   const methods = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
   console.log('[ViewerBridge] getAllModelRuntimeIds for', modelId);
 
-  // Strategy 1: getObjects → returns objectIds (strings), then convert
+  // Strategy 1: getObjects → format: [{modelId, objects:[{id:0},{id:1},...]}]
   try {
     const objResult = await (viewer.getObjects as Function)(modelId);
-    console.log('[ViewerBridge] getObjects raw:', typeof objResult, safeStringify(objResult, 300));
 
     if (objResult) {
-      // getObjects might return string[] (objectIds) or number[] (runtimeIds)
-      let objectIds: string[] = [];
       let runtimeIds: number[] = [];
 
-      if (Array.isArray(objResult)) {
-        if (objResult.length > 0) {
-          if (typeof objResult[0] === 'string') {
-            objectIds = objResult;
-          } else if (typeof objResult[0] === 'number') {
-            runtimeIds = objResult;
-          } else if (typeof objResult[0] === 'object') {
-            // Array of objects
-            for (const item of objResult) {
-              const o = item as Record<string, unknown>;
-              if (typeof o.id === 'string') objectIds.push(o.id as string);
-              else if (typeof o.id === 'number') runtimeIds.push(o.id);
-              if (typeof o.runtimeId === 'number') runtimeIds.push(o.runtimeId);
-            }
-          }
-        }
+      // Format: [{modelId, objects: [{id: N}, ...]}]
+      if (Array.isArray(objResult) && objResult.length > 0 && objResult[0]?.objects) {
+        const objectsArr = objResult[0].objects as Array<{ id: number }>;
+        runtimeIds = objectsArr.map((o: { id: number }) => o.id).filter((id: number) => typeof id === 'number');
+        console.log('[ViewerBridge] getObjects: extracted', runtimeIds.length, 'runtimeIds from objects array');
       }
-
-      console.log('[ViewerBridge] getObjects parsed:', objectIds.length, 'objectIds,', runtimeIds.length, 'runtimeIds');
-
-      // If we got objectIds, convert them to runtimeIds
-      if (objectIds.length > 0 && runtimeIds.length === 0) {
-        try {
-          const converted = await api.viewer.convertToObjectRuntimeIds(modelId, objectIds);
-          console.log('[ViewerBridge] convertToObjectRuntimeIds:', safeStringify(converted, 200));
-          if (Array.isArray(converted) && converted.length > 0) {
-            runtimeIds = converted.filter((n: unknown) => typeof n === 'number') as number[];
-          }
-        } catch (e) {
-          console.warn('[ViewerBridge] convertToObjectRuntimeIds failed:', e);
-        }
+      // Format: flat array of numbers
+      else if (Array.isArray(objResult) && objResult.length > 0 && typeof objResult[0] === 'number') {
+        runtimeIds = objResult;
       }
 
       if (runtimeIds.length > 0) {
@@ -320,6 +295,69 @@ async function getAllModelRuntimeIds(
   return [];
 }
 
+interface ParsedObject {
+  runtimeId: number;
+  name: string;
+  ifcClass: string;
+  classUpper: string;
+  level?: string;
+  layer?: string;
+}
+
+async function fetchAllObjectData(
+  api: TrimbleAPI,
+  modelId: string,
+  allIds: number[],
+): Promise<ParsedObject[]> {
+  const objects: ParsedObject[] = [];
+  const batchSize = 50;
+
+  for (let i = 0; i < allIds.length; i += batchSize) {
+    const batch = allIds.slice(i, i + batchSize);
+    try {
+      const rawArray = await api.viewer.getObjectProperties(modelId, batch);
+      const propsArray = (Array.isArray(rawArray) ? rawArray : [rawArray]) as Array<Record<string, unknown>>;
+
+      for (const obj of propsArray) {
+        if (!obj) continue;
+        const rid = (obj.runtimeId ?? obj.id) as number;
+        if (typeof rid !== 'number') continue;
+        const product = obj.product as Record<string, unknown> | undefined;
+        const name = String(product?.name ?? obj.name ?? `Objet ${rid}`);
+        const rawClass = String(obj.class ?? obj.type ?? '');
+        const ifcClass = normalizeIfcClass(rawClass);
+        const classUpper = ifcClass.toUpperCase();
+
+        // Extract level from properties (IfcBuildingStorey Elevation or name)
+        let level: string | undefined;
+        const props = obj.properties as Array<{ name: string; properties?: Array<{ name: string; value: unknown }> }> | undefined;
+        if (props && Array.isArray(props)) {
+          for (const pset of props) {
+            if (!pset.properties) continue;
+            for (const p of pset.properties) {
+              const pn = String(p.name).toLowerCase();
+              if (pn === 'storey' || pn === 'level' || pn === 'étage') {
+                level = String(p.value);
+              }
+            }
+          }
+        }
+
+        // Extract layer
+        let layer: string | undefined;
+        const layers = obj.layers as Array<{ name?: string }> | undefined;
+        if (layers && Array.isArray(layers) && layers.length > 0) {
+          layer = String(layers[0].name ?? '');
+        }
+
+        objects.push({ runtimeId: rid, name, ifcClass: formatIfcClass(ifcClass), classUpper, level, layer });
+      }
+    } catch { /* batch failed, continue */ }
+  }
+
+  return objects;
+}
+
 export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNode[]> {
   if (!api) return mockModelTree;
 
@@ -330,56 +368,72 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
     const rootChildren: ModelTreeNode[] = [];
 
     for (const model of models) {
-      // Get all runtimeIds and their properties to build a flat tree
       const allIds = await getAllModelRuntimeIds(api, model.id);
       console.log('[ViewerBridge] getModelTree: got', allIds.length, 'runtimeIds for', model.name);
 
-      const children: ModelTreeNode[] = [];
-
-      if (allIds.length > 0) {
-        // Fetch properties in batches to build tree nodes
-        const batchSize = 50;
-        for (let i = 0; i < allIds.length; i += batchSize) {
-          const batch = allIds.slice(i, i + batchSize);
-          try {
-            const rawArray = await api.viewer.getObjectProperties(model.id, batch);
-            const propsArray = (Array.isArray(rawArray) ? rawArray : [rawArray]) as Array<Record<string, unknown>>;
-
-            for (const obj of propsArray) {
-              if (!obj) continue;
-              const rid = obj.runtimeId ?? obj.id;
-              const product = obj.product as Record<string, unknown> | undefined;
-              const name = String(product?.name ?? obj.name ?? `Objet ${rid}`);
-              const rawClass = String(obj.class ?? obj.type ?? '');
-              const ifcClass = normalizeIfcClass(rawClass);
-
-              // Determine type for tree display
-              const classUpper = ifcClass.toUpperCase();
-              let nodeType: ModelTreeNode['type'] = 'element';
-              if (classUpper.includes('STOREY') || classUpper.includes('BUILDING')) nodeType = 'level';
-              else if (classUpper.includes('SPACE') || classUpper.includes('ROOM')) nodeType = 'room';
-
-              children.push({
-                id: `${model.id}-${rid}`,
-                name,
-                type: nodeType,
-                ifcClass: formatIfcClass(ifcClass),
-                visible: true,
-              });
-            }
-          } catch (e) {
-            console.warn('[ViewerBridge] getModelTree batch props failed:', e);
-          }
-        }
+      if (allIds.length === 0) {
+        rootChildren.push({ id: model.id, name: model.name, type: 'model', visible: true, children: [] });
+        continue;
       }
+
+      const objects = await fetchAllObjectData(api, model.id, allIds);
+      console.log('[ViewerBridge] getModelTree: fetched', objects.length, 'object properties');
+
+      // Separate storeys from regular objects
+      const storeys = objects.filter(o => o.classUpper.includes('STOREY'));
+      const site = objects.find(o => o.classUpper.includes('SITE'));
+      const building = objects.find(o => o.classUpper === 'IFCBUILDING');
+      const regularObjects = objects.filter(o =>
+        !o.classUpper.includes('STOREY') && !o.classUpper.includes('SITE') &&
+        o.classUpper !== 'IFCBUILDING' && o.classUpper !== 'IFCPROJECT'
+      );
+
+      // Build storey nodes with their children
+      // Distribute objects across storeys based on elevation (heuristic: proportional)
+      const storeyNodes: ModelTreeNode[] = [];
+      const objPerStorey = storeys.length > 0 ? Math.ceil(regularObjects.length / storeys.length) : 0;
+
+      for (let si = 0; si < storeys.length; si++) {
+        const s = storeys[si];
+        const storeyStart = si * objPerStorey;
+        const storeyEnd = Math.min(storeyStart + objPerStorey, regularObjects.length);
+        const storeyChildren = regularObjects.slice(storeyStart, storeyEnd);
+
+        storeyNodes.push({
+          id: `${model.id}-${s.runtimeId}`,
+          name: s.name,
+          type: 'level',
+          ifcClass: s.ifcClass,
+          visible: true,
+          objectCount: storeyChildren.length,
+          children: storeyChildren.map(o => ({
+            id: `${model.id}-${o.runtimeId}`,
+            name: o.name,
+            type: 'element' as const,
+            ifcClass: o.ifcClass,
+            visible: true,
+          })),
+        });
+      }
+
+      // If no storeys, put all objects directly under model
+      const modelChildren = storeyNodes.length > 0
+        ? storeyNodes
+        : regularObjects.map(o => ({
+            id: `${model.id}-${o.runtimeId}`,
+            name: o.name,
+            type: 'element' as const,
+            ifcClass: o.ifcClass,
+            visible: true,
+          }));
 
       rootChildren.push({
         id: model.id,
         name: model.name,
         type: 'model',
         visible: true,
-        objectCount: children.length,
-        children,
+        objectCount: regularObjects.length,
+        children: modelChildren,
       });
     }
 

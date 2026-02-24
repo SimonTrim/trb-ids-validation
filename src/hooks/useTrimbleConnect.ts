@@ -133,8 +133,7 @@ export function useTrimbleConnect() {
         break;
       }
       case 'viewer.onModelStateChanged':
-      case 'viewer.modelStateChanged':
-      case 'viewer.onPresentationChanged': {
+      case 'viewer.modelStateChanged': {
         console.log('[TC Event] Model state changed, incrementing modelVersion');
         setState((s) => ({ ...s, modelVersion: s.modelVersion + 1 }));
         break;

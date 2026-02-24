@@ -320,14 +320,14 @@ export function ExplorerTab() {
   const toggledOffModelsRef = useRef<Set<string>>(new Set());
   const treeLoadedRef = useRef(false);
 
-  // Load tree (re-triggers when models change, but preserves toggled-off models)
+  // Load tree once when API connects (not on every modelVersion change)
   useEffect(() => {
+    if (!api) return;
     let cancelled = false;
     setTreeLoading(true);
     getModelTree(api).then((tree) => {
       if (!cancelled) {
-        // If tree came back empty but we have existing data, keep it (model was toggled off)
-        if (tree.length === 0 || (tree[0]?.children?.length === 0 && treeLoadedRef.current)) {
+        if (tree.length === 0 && treeLoadedRef.current) {
           setTreeLoading(false);
           return;
         }
@@ -337,7 +337,7 @@ export function ExplorerTab() {
       }
     });
     return () => { cancelled = true; };
-  }, [api, modelVersion]);
+  }, [api]);
 
   // Detect filters from model (only on initial load, not on toggle events)
   useEffect(() => {
