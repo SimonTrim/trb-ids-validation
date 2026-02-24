@@ -843,12 +843,19 @@ export async function setObjectVisibility(
   runtimeIds: number[],
   visible: boolean,
 ): Promise<void> {
-  if (!api) return;
+  if (!api || runtimeIds.length === 0) return;
+  const selector = { modelObjectIds: [{ modelId, objectRuntimeIds: runtimeIds }] };
+  console.log('[ViewerBridge] setObjectVisibility', modelId, runtimeIds.length, 'objects, visible=', visible);
+
   try {
-    await api.viewer.setObjectState(
-      { modelObjectIds: [{ modelId, objectRuntimeIds: runtimeIds }] },
-      { visible },
-    );
+    if (!visible) {
+      await api.viewer.setObjectState(selector, { visible: false });
+      console.log('[ViewerBridge] hide succeeded');
+    } else {
+      // TC API: use "reset" to restore default visibility (true doesn't undo false)
+      await api.viewer.setObjectState(selector, { visible: 'reset' } as never);
+      console.log('[ViewerBridge] show (visible:"reset") succeeded');
+    }
   } catch (err) {
     console.error('[ViewerBridge] setObjectVisibility failed:', err);
   }
@@ -888,9 +895,10 @@ export async function toggleModelVisibility(
   try {
     const allIds = await getAllModelRuntimeIds(api, modelId);
     if (allIds.length > 0) {
+      const state = visible ? { visible: 'reset' as never } : { visible: false };
       await api.viewer.setObjectState(
         { modelObjectIds: [{ modelId, objectRuntimeIds: allIds }] },
-        { visible },
+        state,
       );
       console.log('[ViewerBridge] setObjectState on', allIds.length, 'objects succeeded');
       return;
@@ -955,7 +963,7 @@ export async function resetObjectColorInViewer(
   try {
     await api.viewer.setObjectState(
       { modelObjectIds: [{ modelId, objectRuntimeIds: runtimeIds }] },
-      { color: null },
+      { color: 'reset' },
     );
   } catch (err) {
     console.error('[ViewerBridge] resetObjectColorInViewer failed:', err);
