@@ -854,7 +854,24 @@ export async function setObjectVisibility(
     } else {
       // TC API: use "reset" to restore default visibility (true doesn't undo false)
       await api.viewer.setObjectState(selector, { visible: 'reset' } as never);
-      console.log('[ViewerBridge] show (visible:"reset") succeeded');
+      console.log('[ViewerBridge] show (visible:"reset") called');
+
+      // TC viewer needs a rendering kick after restoring visibility.
+      // A brief select/deselect cycle forces the viewer to re-render the objects.
+      const v = api.viewer as Record<string, unknown>;
+      try {
+        await api.viewer.setSelection(selector, 'set');
+        await new Promise((r) => setTimeout(r, 80));
+        await api.viewer.setSelection({ modelObjectIds: [] }, 'set');
+        console.log('[ViewerBridge] re-render kick (select cycle) done');
+      } catch (e) {
+        // Fallback: nudge camera to force re-render
+        try {
+          const cam = await (v.getCamera as Function)();
+          if (cam) await (v.setCamera as Function)(cam, { animationTime: 0 });
+          console.log('[ViewerBridge] re-render kick (camera nudge) done');
+        } catch { /* ignore */ }
+      }
     }
   } catch (err) {
     console.error('[ViewerBridge] setObjectVisibility failed:', err);
