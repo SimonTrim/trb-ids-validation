@@ -377,36 +377,43 @@ export function ExplorerTab() {
   }, [ifcFilters, materialFilters, levelFilters]);
 
   const toggleVisibility = useCallback((nodeId: string) => {
-    let targetNode: ModelTreeNode | null = null;
+    console.log('[Explorer] toggleVisibility ENTRY nodeId=', nodeId);
 
+    // Find node directly from current treeData (avoids setState side-effect issues)
+    const currentNode = findNodeInTree({ id: '__root__', name: '', type: 'project', visible: true, children: treeData } as ModelTreeNode, nodeId);
+    if (!currentNode) {
+      console.warn('[Explorer] toggleVisibility: node not found in treeData', nodeId);
+      return;
+    }
+
+    const newVisible = !currentNode.visible;
+    console.log('[Explorer] toggleVisibility', nodeId, 'type=', currentNode.type, 'newVisible=', newVisible);
+
+    // Update tree state
     setTreeData((prev) => {
-      const toggle = (nodes: ModelTreeNode[]): ModelTreeNode[] =>
+      const update = (nodes: ModelTreeNode[]): ModelTreeNode[] =>
         nodes.map((n) => {
           if (n.id === nodeId) {
-            targetNode = { ...n, visible: !n.visible };
-            return { ...targetNode, children: n.children ? toggle(n.children) : undefined };
+            return { ...n, visible: newVisible, children: n.children ? update(n.children) : undefined };
           }
-          return { ...n, children: n.children ? toggle(n.children) : undefined };
+          return { ...n, children: n.children ? update(n.children) : undefined };
         });
-      return toggle(prev);
+      return update(prev);
     });
 
-    if (api && targetNode) {
-      const tn = targetNode as ModelTreeNode;
-      const newVisible = tn.visible;
-      console.log('[Explorer] toggleVisibility', tn.id, 'type=', tn.type, 'newVisible=', newVisible);
+    if (!api) return;
 
-      if (tn.type === 'model') {
-        if (!newVisible) toggledOffModelsRef.current.add(tn.id);
-        else toggledOffModelsRef.current.delete(tn.id);
-        toggleModelVisibility(api, tn.id, newVisible);
-      } else {
-        const modelId = getModelIdFromNode(tn, treeData);
-        if (modelId) {
-          const runtimeIds = collectNodeRuntimeIds(tn);
-          if (runtimeIds.length > 0) {
-            setObjectVisibility(api, modelId, runtimeIds, newVisible);
-          }
+    if (currentNode.type === 'model') {
+      if (!newVisible) toggledOffModelsRef.current.add(currentNode.id);
+      else toggledOffModelsRef.current.delete(currentNode.id);
+      toggleModelVisibility(api, currentNode.id, newVisible);
+    } else {
+      const modelId = getModelIdFromNode(currentNode, treeData);
+      if (modelId) {
+        const runtimeIds = collectNodeRuntimeIds(currentNode);
+        console.log('[Explorer] calling setObjectVisibility, modelId=', modelId, 'runtimeIds=', runtimeIds.length, 'newVisible=', newVisible);
+        if (runtimeIds.length > 0) {
+          setObjectVisibility(api, modelId, runtimeIds, newVisible);
         }
       }
     }
