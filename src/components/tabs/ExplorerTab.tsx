@@ -288,6 +288,34 @@ function findNodeInTree(tree: ModelTreeNode, id: string): ModelTreeNode | null {
   return null;
 }
 
+/** Collect runtimeIds grouped by modelId for elements matching a predicate */
+function collectFilteredIds(
+  treeData: ModelTreeNode[],
+  predicate: (node: ModelTreeNode) => boolean,
+): Map<string, number[]> {
+  const result = new Map<string, number[]>();
+
+  const walk = (nodes: ModelTreeNode[], currentModelId: string | null) => {
+    for (const node of nodes) {
+      const modelId = node.type === 'model' ? node.id : currentModelId;
+
+      if ((node.type === 'element' || node.type === 'level') && predicate(node)) {
+        const rids = collectNodeRuntimeIds(node);
+        if (modelId && rids.length > 0) {
+          const existing = result.get(modelId) ?? [];
+          existing.push(...rids);
+          result.set(modelId, existing);
+        }
+      }
+
+      if (node.children) walk(node.children, modelId);
+    }
+  };
+
+  walk(treeData, null);
+  return result;
+}
+
 function countNodes(nodes: ModelTreeNode[]): number {
   let count = 0;
   for (const n of nodes) {
@@ -320,14 +348,14 @@ export function ExplorerTab() {
   const toggledOffModelsRef = useRef<Set<string>>(new Set());
   const treeLoadedRef = useRef(false);
 
-  // Load tree once when API connects (not on every modelVersion change)
+  // Load tree when API connects or group mode changes
   useEffect(() => {
     if (!api) return;
     let cancelled = false;
     setTreeLoading(true);
-    getModelTree(api).then((tree) => {
+    getModelTree(api, groupMode).then((tree) => {
       if (!cancelled) {
-        if (tree.length === 0 && treeLoadedRef.current) {
+        if (tree.length === 0 && treeLoadedRef.current && groupMode === 'building') {
           setTreeLoading(false);
           return;
         }
@@ -337,7 +365,7 @@ export function ExplorerTab() {
       }
     });
     return () => { cancelled = true; };
-  }, [api]);
+  }, [api, groupMode]);
 
   // Detect filters from model (only on initial load, not on toggle events)
   useEffect(() => {
@@ -491,26 +519,66 @@ export function ExplorerTab() {
     }
   }, [api, treeData, selectedNodeId]);
 
+  const applyFilterVisibility = useCallback((
+    predicate: (node: ModelTreeNode) => boolean,
+    visible: boolean,
+  ) => {
+    if (!api) return;
+    const idsByModel = collectFilteredIds(treeData, predicate);
+    for (const [modelId, rids] of idsByModel) {
+      setObjectVisibility(api, modelId, rids, visible);
+    }
+  }, [api, treeData]);
+
   const toggleFilter = useCallback((category: FilterCategory, name: string) => {
     const updater = (items: FilterItem[]) =>
       items.map((i) => (i.name === name ? { ...i, checked: !i.checked } : i));
-    if (category === 'classes') setIfcFilters(updater);
-    if (category === 'materials') setMaterialFilters(updater);
-    if (category === 'levels') setLevelFilters(updater);
-  }, []);
+
+    // Determine current state to know if we're hiding or showing
+    let currentChecked = true;
+    if (category === 'classes') {
+      currentChecked = ifcFilters.find(f => f.name === name)?.checked ?? true;
+      setIfcFilters(updater);
+    }
+    if (category === 'materials') {
+      currentChecked = materialFilters.find(f => f.name === name)?.checked ?? true;
+      setMaterialFilters(updater);
+    }
+    if (category === 'levels') {
+      currentChecked = levelFilters.find(f => f.name === name)?.checked ?? true;
+      setLevelFilters(updater);
+    }
+
+    const newVisible = !currentChecked;
+    if (category === 'classes') {
+      applyFilterVisibility((n) => n.ifcClass === name, newVisible);
+    } else if (category === 'levels') {
+      applyFilterVisibility((n) => n.type === 'level' && n.name === name, newVisible);
+    }
+    // Materials: handled via class for now (objects don't store material in tree)
+  }, [ifcFilters, materialFilters, levelFilters, applyFilterVisibility]);
 
   const toggleAllFilters = useCallback((category: FilterCategory, checked: boolean) => {
     const updater = (items: FilterItem[]) => items.map((i) => ({ ...i, checked }));
-    if (category === 'classes') setIfcFilters(updater);
+    if (category === 'classes') {
+      setIfcFilters(updater);
+      // Show/hide all element objects
+      applyFilterVisibility((n) => n.type === 'element' || n.type === 'level', checked);
+    }
     if (category === 'materials') setMaterialFilters(updater);
-    if (category === 'levels') setLevelFilters(updater);
-  }, []);
+    if (category === 'levels') {
+      setLevelFilters(updater);
+      applyFilterVisibility((n) => n.type === 'level', checked);
+    }
+  }, [applyFilterVisibility]);
 
   const resetFilters = useCallback(() => {
     setIfcFilters((items) => items.map((i) => ({ ...i, checked: true })));
     setMaterialFilters((items) => items.map((i) => ({ ...i, checked: true })));
     setLevelFilters((items) => items.map((i) => ({ ...i, checked: true })));
-  }, []);
+    // Show everything
+    applyFilterVisibility(() => true, true);
+  }, [applyFilterVisibility]);
 
   const getCurrentFilterItems = (): FilterItem[] => {
     switch (activeFilterCategory) {

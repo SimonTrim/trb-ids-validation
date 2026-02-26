@@ -298,10 +298,12 @@ async function getAllModelRuntimeIds(
 interface ParsedObject {
   runtimeId: number;
   name: string;
+  description?: string;
   ifcClass: string;
   classUpper: string;
   level?: string;
   layer?: string;
+  elevation?: number;
 }
 
 async function fetchAllObjectData(
@@ -324,12 +326,13 @@ async function fetchAllObjectData(
         if (typeof rid !== 'number') continue;
         const product = obj.product as Record<string, unknown> | undefined;
         const name = String(product?.name ?? obj.name ?? `Objet ${rid}`);
+        const description = product?.description ? String(product.description) : undefined;
         const rawClass = String(obj.class ?? obj.type ?? '');
         const ifcClass = normalizeIfcClass(rawClass);
         const classUpper = ifcClass.toUpperCase();
 
-        // Extract level from properties (IfcBuildingStorey Elevation or name)
         let level: string | undefined;
+        let elevation: number | undefined;
         const props = obj.properties as Array<{ name: string; properties?: Array<{ name: string; value: unknown }> }> | undefined;
         if (props && Array.isArray(props)) {
           for (const pset of props) {
@@ -339,18 +342,32 @@ async function fetchAllObjectData(
               if (pn === 'storey' || pn === 'level' || pn === 'étage') {
                 level = String(p.value);
               }
+              if (pn === 'elevation' && typeof p.value === 'number') {
+                elevation = p.value;
+              }
             }
           }
         }
 
-        // Extract layer
+        // For IfcBuildingStorey: also try to get elevation from CenterOfGravityZ
+        if (classUpper.includes('STOREY') && elevation === undefined && props) {
+          for (const pset of props) {
+            if (!pset.properties) continue;
+            for (const p of pset.properties) {
+              if (String(p.name) === 'CenterOfGravityZ' && typeof p.value === 'number') {
+                elevation = p.value;
+              }
+            }
+          }
+        }
+
         let layer: string | undefined;
         const layers = obj.layers as Array<{ name?: string }> | undefined;
         if (layers && Array.isArray(layers) && layers.length > 0) {
           layer = String(layers[0].name ?? '');
         }
 
-        objects.push({ runtimeId: rid, name, ifcClass: formatIfcClass(ifcClass), classUpper, level, layer });
+        objects.push({ runtimeId: rid, name, description, ifcClass: formatIfcClass(ifcClass), classUpper, level, layer, elevation });
       }
     } catch { /* batch failed, continue */ }
   }
@@ -358,7 +375,10 @@ async function fetchAllObjectData(
   return objects;
 }
 
-export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNode[]> {
+export async function getModelTree(
+  api: TrimbleAPI | null,
+  groupMode: 'building' | 'ifc' | 'layers' = 'building',
+): Promise<ModelTreeNode[]> {
   if (!api) return mockModelTree;
 
   try {
@@ -381,51 +401,150 @@ export async function getModelTree(api: TrimbleAPI | null): Promise<ModelTreeNod
 
       // Separate storeys from regular objects
       const storeys = objects.filter(o => o.classUpper.includes('STOREY'));
-      const site = objects.find(o => o.classUpper.includes('SITE'));
-      const building = objects.find(o => o.classUpper === 'IFCBUILDING');
       const regularObjects = objects.filter(o =>
         !o.classUpper.includes('STOREY') && !o.classUpper.includes('SITE') &&
         o.classUpper !== 'IFCBUILDING' && o.classUpper !== 'IFCPROJECT'
       );
 
-      // Build storey nodes with their children
-      // Distribute objects across storeys based on elevation (heuristic: proportional)
-      const storeyNodes: ModelTreeNode[] = [];
-      const objPerStorey = storeys.length > 0 ? Math.ceil(regularObjects.length / storeys.length) : 0;
+      // Sort storeys by elevation (ascending) for proper ordering
+      storeys.sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0));
 
-      for (let si = 0; si < storeys.length; si++) {
-        const s = storeys[si];
-        const storeyStart = si * objPerStorey;
-        const storeyEnd = Math.min(storeyStart + objPerStorey, regularObjects.length);
-        const storeyChildren = regularObjects.slice(storeyStart, storeyEnd);
+      // Build display name for each storey (differentiate duplicates)
+      const allSameName = storeys.length > 1 && storeys.every(s => s.name === storeys[0].name);
+      const storeyDisplayNames = storeys.map((s, i) => {
+        if (!allSameName) return s.name;
+        // All have same name: differentiate using description, elevation, or index
+        if (s.description && s.description !== s.name) return s.description;
+        if (s.elevation !== undefined) return `${s.name} (${s.elevation >= 0 ? '+' : ''}${s.elevation.toFixed(1)} m)`;
+        return `${s.name} ${i + 1}`;
+      });
+      console.log('[ViewerBridge] storeys:', storeys.map((s, i) => `${storeyDisplayNames[i]} (elev=${s.elevation})`));
 
-        storeyNodes.push({
+      // Assign objects to storeys by their level property, then by elevation proximity
+      const storeyBuckets = storeys.map(() => [] as ParsedObject[]);
+      const unassigned: ParsedObject[] = [];
+
+      for (const obj of regularObjects) {
+        let assigned = false;
+
+        // Try matching by level property to storey name/description
+        if (obj.level) {
+          const lvl = obj.level.toLowerCase();
+          for (let si = 0; si < storeys.length; si++) {
+            const sName = storeys[si].name.toLowerCase();
+            const sDesc = (storeys[si].description ?? '').toLowerCase();
+            if (lvl === sName || lvl === sDesc || sName.includes(lvl) || lvl.includes(sName)) {
+              storeyBuckets[si].push(obj);
+              assigned = true;
+              break;
+            }
+          }
+        }
+
+        // Try matching by elevation proximity
+        if (!assigned && obj.elevation !== undefined && storeys.some(s => s.elevation !== undefined)) {
+          let bestIdx = 0;
+          let bestDist = Infinity;
+          for (let si = 0; si < storeys.length; si++) {
+            if (storeys[si].elevation === undefined) continue;
+            const dist = Math.abs(obj.elevation - storeys[si].elevation!);
+            if (dist < bestDist) { bestDist = dist; bestIdx = si; }
+          }
+          storeyBuckets[bestIdx].push(obj);
+          assigned = true;
+        }
+
+        if (!assigned) unassigned.push(obj);
+      }
+
+      // Distribute remaining unassigned objects proportionally
+      if (unassigned.length > 0 && storeys.length > 0) {
+        const perStorey = Math.ceil(unassigned.length / storeys.length);
+        for (let si = 0; si < storeys.length; si++) {
+          const chunk = unassigned.slice(si * perStorey, (si + 1) * perStorey);
+          storeyBuckets[si].push(...chunk);
+        }
+      }
+
+      let modelChildren: ModelTreeNode[];
+
+      if (groupMode === 'ifc') {
+        // Group by IFC class
+        const classBuckets = new Map<string, ParsedObject[]>();
+        for (const obj of regularObjects) {
+          const cls = obj.ifcClass || 'Autre';
+          if (!classBuckets.has(cls)) classBuckets.set(cls, []);
+          classBuckets.get(cls)!.push(obj);
+        }
+        modelChildren = Array.from(classBuckets.entries())
+          .sort((a, b) => b[1].length - a[1].length)
+          .map(([cls, objs]) => ({
+            id: `${model.id}-class-${cls}`,
+            name: cls,
+            type: 'level' as const,
+            ifcClass: cls,
+            visible: true,
+            objectCount: objs.length,
+            children: objs.map(o => ({
+              id: `${model.id}-${o.runtimeId}`,
+              name: o.name,
+              type: 'element' as const,
+              ifcClass: o.ifcClass,
+              visible: true,
+            })),
+          }));
+      } else if (groupMode === 'layers') {
+        // Group by layer (Presentation Layer)
+        const layerBuckets = new Map<string, ParsedObject[]>();
+        for (const obj of regularObjects) {
+          const lyr = obj.layer || 'Sans calque';
+          if (!layerBuckets.has(lyr)) layerBuckets.set(lyr, []);
+          layerBuckets.get(lyr)!.push(obj);
+        }
+        modelChildren = Array.from(layerBuckets.entries())
+          .sort((a, b) => b[1].length - a[1].length)
+          .map(([lyr, objs]) => ({
+            id: `${model.id}-layer-${lyr}`,
+            name: lyr,
+            type: 'level' as const,
+            visible: true,
+            objectCount: objs.length,
+            children: objs.map(o => ({
+              id: `${model.id}-${o.runtimeId}`,
+              name: o.name,
+              type: 'element' as const,
+              ifcClass: o.ifcClass,
+              visible: true,
+            })),
+          }));
+      } else {
+        // Default: building mode (by IfcBuildingStorey)
+        const storeyNodes: ModelTreeNode[] = storeys.map((s, si) => ({
           id: `${model.id}-${s.runtimeId}`,
-          name: s.name,
-          type: 'level',
+          name: storeyDisplayNames[si],
+          type: 'level' as const,
           ifcClass: s.ifcClass,
           visible: true,
-          objectCount: storeyChildren.length,
-          children: storeyChildren.map(o => ({
+          objectCount: storeyBuckets[si].length,
+          children: storeyBuckets[si].map(o => ({
             id: `${model.id}-${o.runtimeId}`,
             name: o.name,
             type: 'element' as const,
             ifcClass: o.ifcClass,
             visible: true,
           })),
-        });
-      }
+        }));
 
-      // If no storeys, put all objects directly under model
-      const modelChildren = storeyNodes.length > 0
-        ? storeyNodes
-        : regularObjects.map(o => ({
-            id: `${model.id}-${o.runtimeId}`,
-            name: o.name,
-            type: 'element' as const,
-            ifcClass: o.ifcClass,
-            visible: true,
-          }));
+        modelChildren = storeyNodes.length > 0
+          ? storeyNodes
+          : regularObjects.map(o => ({
+              id: `${model.id}-${o.runtimeId}`,
+              name: o.name,
+              type: 'element' as const,
+              ifcClass: o.ifcClass,
+              visible: true,
+            }));
+      }
 
       rootChildren.push({
         id: model.id,
