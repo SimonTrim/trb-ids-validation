@@ -362,9 +362,27 @@ async function fetchAllObjectData(
         }
 
         let layer: string | undefined;
+        // Try obj.layers first
         const layers = obj.layers as Array<{ name?: string }> | undefined;
         if (layers && Array.isArray(layers) && layers.length > 0) {
           layer = String(layers[0].name ?? '');
+        }
+        // Fallback: extract from "Presentation Layers" property set → "Layer" property
+        if (!layer && props) {
+          for (const pset of props) {
+            const psetName = String(pset.name ?? '').toLowerCase();
+            if (psetName.includes('presentation') && psetName.includes('layer')) {
+              if (pset.properties) {
+                for (const p of pset.properties) {
+                  if (String(p.name).toLowerCase() === 'layer' && p.value) {
+                    layer = String(p.value);
+                    break;
+                  }
+                }
+              }
+            }
+            if (layer) break;
+          }
         }
 
         objects.push({ runtimeId: rid, name, description, ifcClass: formatIfcClass(ifcClass), classUpper, level, layer, elevation });
