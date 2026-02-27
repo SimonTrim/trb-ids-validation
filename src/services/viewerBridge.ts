@@ -314,6 +314,30 @@ async function fetchAllObjectData(
   const objects: ParsedObject[] = [];
   const batchSize = 50;
 
+  // Try to get model-level layer assignments via getLayers API
+  const layerMap = new Map<number, string>();
+  try {
+    const viewer = api.viewer as Record<string, unknown>;
+    if (typeof viewer.getLayers === 'function') {
+      const modelLayers = await (viewer.getLayers as Function)();
+      console.log('[ViewerBridge] getLayers result:', safeStringify(modelLayers, 500));
+      if (Array.isArray(modelLayers)) {
+        for (const ml of modelLayers) {
+          const layerName = ml?.name ?? ml?.layerName ?? '';
+          const objectIds = ml?.objectRuntimeIds ?? ml?.objects ?? ml?.ids ?? [];
+          if (layerName && Array.isArray(objectIds)) {
+            for (const oid of objectIds) {
+              if (typeof oid === 'number') layerMap.set(oid, String(layerName));
+            }
+          }
+        }
+      }
+      console.log('[ViewerBridge] getLayers mapped', layerMap.size, 'objects to layers');
+    }
+  } catch (e) {
+    console.warn('[ViewerBridge] getLayers failed:', e);
+  }
+
   for (let i = 0; i < allIds.length; i += batchSize) {
     const batch = allIds.slice(i, i + batchSize);
     try {
@@ -332,22 +356,30 @@ async function fetchAllObjectData(
         const ifcClass = normalizeIfcClass(rawClass);
         const classUpper = ifcClass.toUpperCase();
 
-        // Use parsePsets (same as FicheTechniqueTab) for robust property extraction
+        // Use parsePsets for robust property extraction
         const allPsets = parsePsets(obj.properties ?? obj.propertySets ?? []);
-        // Also merge product psets
         const productPsets = extractProductPsets(obj);
         for (const [k, v] of Object.entries(productPsets)) {
           if (!allPsets[k]) allPsets[k] = v;
         }
 
-        // Log first object's pset names for debugging
+        // Log first object: raw pset names + raw properties keys
         if (i === 0 && oi === 0) {
-          console.log('[ViewerBridge] fetchAllObjectData first object psets:', Object.keys(allPsets));
+          const rawProps = obj.properties as unknown[] | undefined;
+          const rawPsetNames = rawProps?.map((p: unknown) => (p as Record<string, unknown>)?.name) ?? [];
+          console.log('[ViewerBridge] RAW pset names from API:', rawPsetNames);
+          console.log('[ViewerBridge] parsed pset names:', Object.keys(allPsets));
+          console.log('[ViewerBridge] obj top-level keys:', Object.keys(obj));
         }
 
         let level: string | undefined;
         let elevation: number | undefined;
         let layer: string | undefined;
+
+        // First: check getLayers map
+        if (layerMap.has(rid)) {
+          layer = layerMap.get(rid);
+        }
 
         for (const [psetName, propMap] of Object.entries(allPsets)) {
           const psetLower = psetName.toLowerCase();
@@ -355,25 +387,23 @@ async function fetchAllObjectData(
           for (const [propKey, propVal] of Object.entries(propMap)) {
             const keyLower = propKey.toLowerCase();
 
-            // Extract level
             if (keyLower === 'storey' || keyLower === 'level' || keyLower === 'étage') {
               level = propVal;
             }
-
-            // Extract elevation
             if (keyLower === 'elevation') {
               const num = parseFloat(propVal);
               if (!isNaN(num)) elevation = num;
             }
-
-            // Extract layer from any pset containing "layer" in name
-            if (!layer && psetLower.includes('layer') && keyLower === 'layer' && propVal) {
-              layer = propVal;
+            // Extract layer from psets: any pset containing "layer" with key "layer" or "name"
+            if (!layer && psetLower.includes('layer')) {
+              if ((keyLower === 'layer' || keyLower === 'name') && propVal) {
+                layer = propVal;
+              }
             }
           }
         }
 
-        // Fallback elevation for storeys from CenterOfGravityZ
+        // Fallback elevation for storeys
         if (classUpper.includes('STOREY') && elevation === undefined) {
           const cgz = allPsets['CalculatedGeometryValues']?.['CenterOfGravityZ'];
           if (cgz) {
@@ -394,6 +424,9 @@ async function fetchAllObjectData(
       }
     } catch { /* batch failed, continue */ }
   }
+
+  const withLayer = objects.filter(o => !!o.layer).length;
+  console.log('[ViewerBridge] fetchAllObjectData: total=', objects.length, 'withLayer=', withLayer);
 
   return objects;
 }
