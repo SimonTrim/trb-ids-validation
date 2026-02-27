@@ -449,6 +449,142 @@ async function fetchAllObjectData(
   return objects;
 }
 
+/**
+ * Discover layer→object mapping using multiple strategies:
+ * 1. Try single-object getObjectProperties to check for "Presentation Layers" pset
+ * 2. If not found, use setLayersVisibility + getObjects to discover hidden objects per layer
+ */
+async function discoverLayerMapping(
+  api: TrimbleAPI,
+  modelId: string,
+  objects: ParsedObject[],
+): Promise<void> {
+  const viewer = api.viewer as Record<string, unknown>;
+
+  // Build lookup
+  const runtimeToIndex = new Map<number, number>();
+  objects.forEach((o, i) => runtimeToIndex.set(o.runtimeId, i));
+
+  // --- Strategy 1: single-object getObjectProperties ---
+  if (objects.length > 0) {
+    try {
+      const testId = objects[0].runtimeId;
+      const singleResult = await api.viewer.getObjectProperties(modelId, [testId]);
+      const testArr = Array.isArray(singleResult) ? singleResult : [singleResult];
+      if (testArr[0]) {
+        const rawProps = (testArr[0] as Record<string, unknown>).properties as unknown[];
+        const psetNames = rawProps?.map((p: unknown) => (p as Record<string, unknown>)?.name) ?? [];
+        console.log('[ViewerBridge] discoverLayerMapping: single-object pset names:', JSON.stringify(psetNames));
+
+        const layerPset = rawProps?.find((p: unknown) => {
+          const name = String((p as Record<string, unknown>)?.name ?? '').toLowerCase();
+          return name.includes('layer') || name.includes('calque');
+        });
+        if (layerPset) {
+          console.log('[ViewerBridge] discoverLayerMapping: found layer pset in single fetch, using small batches');
+          // Re-fetch in batch-of-1 to get layer for each object
+          for (let i = 0; i < objects.length; i++) {
+            try {
+              const res = await api.viewer.getObjectProperties(modelId, [objects[i].runtimeId]);
+              const arr = Array.isArray(res) ? res : [res];
+              const props = (arr[0] as Record<string, unknown>)?.properties as unknown[] | undefined;
+              if (props) {
+                const lp = props.find((p: unknown) => {
+                  const n = String((p as Record<string, unknown>)?.name ?? '').toLowerCase();
+                  return n.includes('layer') || n.includes('calque');
+                }) as Record<string, unknown> | undefined;
+                if (lp) {
+                  const subProps = lp.properties as unknown[] | undefined;
+                  if (Array.isArray(subProps)) {
+                    for (const sp of subProps) {
+                      const k = String((sp as Record<string, unknown>)?.name ?? '').toLowerCase();
+                      const v = String((sp as Record<string, unknown>)?.value ?? '');
+                      if ((k === 'layer' || k === 'name') && v) {
+                        objects[i].layer = v;
+                        break;
+                      }
+                    }
+                  }
+                }
+              }
+            } catch { /* skip individual failures */ }
+          }
+          const count = objects.filter(o => !!o.layer).length;
+          console.log('[ViewerBridge] discoverLayerMapping (strategy 1): mapped', count, '/', objects.length);
+          if (count > 0) return;
+        }
+      }
+    } catch (e) {
+      console.warn('[ViewerBridge] discoverLayerMapping strategy 1 failed:', e);
+    }
+  }
+
+  // --- Strategy 2: setLayersVisibility + getObjects ---
+  if (typeof viewer.getLayers !== 'function' || typeof viewer.setLayersVisibility !== 'function') return;
+
+  try {
+    const layersResult = await (viewer.getLayers as Function)(modelId);
+    if (!Array.isArray(layersResult) || layersResult.length === 0) return;
+    const layerNames = layersResult.map((l: Record<string, unknown>) => String(l.name ?? '')).filter(Boolean);
+    console.log('[ViewerBridge] discoverLayerMapping (strategy 2): layers:', layerNames);
+    if (layerNames.length === 0) return;
+
+    // Log what getObjects returns BEFORE any hide
+    try {
+      const baselineResult = await (viewer.getObjects as Function)(
+        { modelObjectIds: [{ modelId }] },
+        { visible: false },
+      );
+      console.log('[ViewerBridge] baseline hidden objects:', JSON.stringify(baselineResult)?.substring(0, 500));
+    } catch (e) {
+      console.warn('[ViewerBridge] baseline getObjects failed:', e);
+    }
+
+    for (const layerName of layerNames) {
+      try {
+        await (viewer.setLayersVisibility as Function)([layerName], false);
+
+        const hiddenResult = await (viewer.getObjects as Function)(
+          { modelObjectIds: [{ modelId }] },
+          { visible: false },
+        );
+
+        console.log(`[ViewerBridge] after hiding "${layerName}":`, JSON.stringify(hiddenResult)?.substring(0, 500));
+
+        let foundCount = 0;
+        if (Array.isArray(hiddenResult)) {
+          for (const modelObjs of hiddenResult) {
+            const objArr = modelObjs?.objects ?? modelObjs?.objectRuntimeIds ?? [];
+            if (Array.isArray(objArr)) {
+              for (const item of objArr) {
+                const rid = typeof item === 'number' ? item : (item?.id ?? item?.objectRuntimeId);
+                if (typeof rid === 'number' && runtimeToIndex.has(rid)) {
+                  const idx = runtimeToIndex.get(rid)!;
+                  if (!objects[idx].layer) {
+                    objects[idx].layer = layerName;
+                    foundCount++;
+                  }
+                }
+              }
+            }
+          }
+        }
+        console.log(`[ViewerBridge] layer "${layerName}": mapped ${foundCount} objects`);
+
+        await (viewer.setLayersVisibility as Function)([layerName], true);
+      } catch (e) {
+        console.warn(`[ViewerBridge] layer discovery failed for "${layerName}":`, e);
+        try { await (viewer.setLayersVisibility as Function)([layerName], true); } catch { /* ignore */ }
+      }
+    }
+
+    const withLayer = objects.filter(o => !!o.layer).length;
+    console.log('[ViewerBridge] discoverLayerMapping (strategy 2): mapped', withLayer, '/', objects.length);
+  } catch (e) {
+    console.error('[ViewerBridge] discoverLayerMapping failed:', e);
+  }
+}
+
 export async function getModelTree(
   api: TrimbleAPI | null,
   groupMode: 'building' | 'ifc' | 'layers' = 'building',
@@ -471,7 +607,18 @@ export async function getModelTree(
       }
 
       const objects = await fetchAllObjectData(api, model.id, allIds);
-      console.log('[ViewerBridge] getModelTree: fetched', objects.length, 'object properties');
+      const withLayer = objects.filter(o => !!o.layer).length;
+      console.log('[ViewerBridge] getModelTree: fetched', objects.length, 'objects, groupMode=', groupMode, 'withLayer=', withLayer);
+
+      // When in layers mode, discover layer mapping via setLayersVisibility API
+      if (groupMode === 'layers') {
+        if (withLayer === 0) {
+          console.log('[ViewerBridge] no layers from properties, calling discoverLayerMapping...');
+          await discoverLayerMapping(api, model.id, objects);
+        } else {
+          console.log('[ViewerBridge] layers already found from properties, skipping discovery');
+        }
+      }
 
       // Separate storeys from regular objects
       const storeys = objects.filter(o => o.classUpper.includes('STOREY'));
