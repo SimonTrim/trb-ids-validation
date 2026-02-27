@@ -320,7 +320,8 @@ async function fetchAllObjectData(
       const rawArray = await api.viewer.getObjectProperties(modelId, batch);
       const propsArray = (Array.isArray(rawArray) ? rawArray : [rawArray]) as Array<Record<string, unknown>>;
 
-      for (const obj of propsArray) {
+      for (let oi = 0; oi < propsArray.length; oi++) {
+        const obj = propsArray[oi];
         if (!obj) continue;
         const rid = (obj.runtimeId ?? obj.id) as number;
         if (typeof rid !== 'number') continue;
@@ -331,57 +332,61 @@ async function fetchAllObjectData(
         const ifcClass = normalizeIfcClass(rawClass);
         const classUpper = ifcClass.toUpperCase();
 
+        // Use parsePsets (same as FicheTechniqueTab) for robust property extraction
+        const allPsets = parsePsets(obj.properties ?? obj.propertySets ?? []);
+        // Also merge product psets
+        const productPsets = extractProductPsets(obj);
+        for (const [k, v] of Object.entries(productPsets)) {
+          if (!allPsets[k]) allPsets[k] = v;
+        }
+
+        // Log first object's pset names for debugging
+        if (i === 0 && oi === 0) {
+          console.log('[ViewerBridge] fetchAllObjectData first object psets:', Object.keys(allPsets));
+        }
+
         let level: string | undefined;
         let elevation: number | undefined;
-        const props = obj.properties as Array<{ name: string; properties?: Array<{ name: string; value: unknown }> }> | undefined;
-        if (props && Array.isArray(props)) {
-          for (const pset of props) {
-            if (!pset.properties) continue;
-            for (const p of pset.properties) {
-              const pn = String(p.name).toLowerCase();
-              if (pn === 'storey' || pn === 'level' || pn === 'étage') {
-                level = String(p.value);
-              }
-              if (pn === 'elevation' && typeof p.value === 'number') {
-                elevation = p.value;
-              }
-            }
-          }
-        }
-
-        // For IfcBuildingStorey: also try to get elevation from CenterOfGravityZ
-        if (classUpper.includes('STOREY') && elevation === undefined && props) {
-          for (const pset of props) {
-            if (!pset.properties) continue;
-            for (const p of pset.properties) {
-              if (String(p.name) === 'CenterOfGravityZ' && typeof p.value === 'number') {
-                elevation = p.value;
-              }
-            }
-          }
-        }
-
         let layer: string | undefined;
-        // Try obj.layers first
-        const layers = obj.layers as Array<{ name?: string }> | undefined;
-        if (layers && Array.isArray(layers) && layers.length > 0) {
-          layer = String(layers[0].name ?? '');
-        }
-        // Fallback: extract from "Presentation Layers" property set → "Layer" property
-        if (!layer && props) {
-          for (const pset of props) {
-            const psetName = String(pset.name ?? '').toLowerCase();
-            if (psetName.includes('presentation') && psetName.includes('layer')) {
-              if (pset.properties) {
-                for (const p of pset.properties) {
-                  if (String(p.name).toLowerCase() === 'layer' && p.value) {
-                    layer = String(p.value);
-                    break;
-                  }
-                }
-              }
+
+        for (const [psetName, propMap] of Object.entries(allPsets)) {
+          const psetLower = psetName.toLowerCase();
+
+          for (const [propKey, propVal] of Object.entries(propMap)) {
+            const keyLower = propKey.toLowerCase();
+
+            // Extract level
+            if (keyLower === 'storey' || keyLower === 'level' || keyLower === 'étage') {
+              level = propVal;
             }
-            if (layer) break;
+
+            // Extract elevation
+            if (keyLower === 'elevation') {
+              const num = parseFloat(propVal);
+              if (!isNaN(num)) elevation = num;
+            }
+
+            // Extract layer from any pset containing "layer" in name
+            if (!layer && psetLower.includes('layer') && keyLower === 'layer' && propVal) {
+              layer = propVal;
+            }
+          }
+        }
+
+        // Fallback elevation for storeys from CenterOfGravityZ
+        if (classUpper.includes('STOREY') && elevation === undefined) {
+          const cgz = allPsets['CalculatedGeometryValues']?.['CenterOfGravityZ'];
+          if (cgz) {
+            const num = parseFloat(cgz);
+            if (!isNaN(num)) elevation = num;
+          }
+        }
+
+        // Fallback layer from obj.layers array
+        if (!layer) {
+          const layersArr = obj.layers as Array<{ name?: string }> | undefined;
+          if (layersArr && Array.isArray(layersArr) && layersArr.length > 0) {
+            layer = String(layersArr[0].name ?? '');
           }
         }
 
