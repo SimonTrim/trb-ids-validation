@@ -314,20 +314,38 @@ async function fetchAllObjectData(
   const objects: ParsedObject[] = [];
   const batchSize = 50;
 
-  // Try to get model-level layer assignments via getLayers API
+  // Get layer assignments via getLayers(modelId) API
   const layerMap = new Map<number, string>();
   try {
     const viewer = api.viewer as Record<string, unknown>;
     if (typeof viewer.getLayers === 'function') {
-      const modelLayers = await (viewer.getLayers as Function)();
-      console.log('[ViewerBridge] getLayers result:', safeStringify(modelLayers, 500));
+      const modelLayers = await (viewer.getLayers as Function)(modelId);
+      console.log('[ViewerBridge] getLayers result:', safeStringify(modelLayers, 1000));
       if (Array.isArray(modelLayers)) {
         for (const ml of modelLayers) {
-          const layerName = ml?.name ?? ml?.layerName ?? '';
-          const objectIds = ml?.objectRuntimeIds ?? ml?.objects ?? ml?.ids ?? [];
+          if (!ml || typeof ml !== 'object') continue;
+          // Try multiple response formats
+          const layerName = ml.name ?? ml.layerName ?? '';
+          const objectIds = ml.objectRuntimeIds ?? ml.objects ?? ml.ids ?? ml.entityIds ?? [];
+
           if (layerName && Array.isArray(objectIds)) {
             for (const oid of objectIds) {
-              if (typeof oid === 'number') layerMap.set(oid, String(layerName));
+              const id = typeof oid === 'number' ? oid : (typeof oid === 'object' && oid?.id != null ? Number(oid.id) : NaN);
+              if (!isNaN(id)) layerMap.set(id, String(layerName));
+            }
+          }
+
+          // Also handle nested format: {modelId, layers: [{name, ...}]}
+          if (ml.layers && Array.isArray(ml.layers)) {
+            for (const layer of ml.layers) {
+              const ln = layer?.name ?? '';
+              const ids = layer?.objectRuntimeIds ?? layer?.entityIds ?? layer?.ids ?? [];
+              if (ln && Array.isArray(ids)) {
+                for (const oid of ids) {
+                  const id = typeof oid === 'number' ? oid : Number(oid);
+                  if (!isNaN(id)) layerMap.set(id, String(ln));
+                }
+              }
             }
           }
         }
