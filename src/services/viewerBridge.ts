@@ -540,6 +540,16 @@ async function discoverLayerMapping(
     console.log('[ViewerBridge] discoverLayerMapping (strategy 2): layers:', layerNames);
     if (layerNames.length === 0) return;
 
+    // Experiment: Try to get layers using getHierarchyChildren
+    try {
+      const hierarchyLayer = await (viewer.getHierarchyChildren as Function)(modelId, [], 'layer', true);
+      console.log('[ViewerBridge] hierarchy(layer):', JSON.stringify(hierarchyLayer)?.substring(0, 500));
+    } catch (e) { /* ignore */ }
+    try {
+      const hierarchyLayers = await (viewer.getHierarchyChildren as Function)(modelId, [], 'layers', true);
+      console.log('[ViewerBridge] hierarchy(layers):', JSON.stringify(hierarchyLayers)?.substring(0, 500));
+    } catch (e) { /* ignore */ }
+
     // Log what getObjects returns BEFORE any hide
     try {
       const baselineResult = await (viewer.getObjects as Function)(
@@ -554,6 +564,9 @@ async function discoverLayerMapping(
     for (const layerName of layerNames) {
       try {
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: false }]);
+        
+        // Let the viewer update its internal state
+        await new Promise(r => setTimeout(r, 200));
 
         const hiddenResult = await (viewer.getObjects as Function)(
           { modelObjectIds: [{ modelId }] },
@@ -577,12 +590,16 @@ async function discoverLayerMapping(
                   }
                 }
               }
+            } else if (modelObjs && modelObjs.modelId === modelId && !modelObjs.objects) {
+              // Sometimes it might return just {modelId: "xxx"} if ALL objects are hidden?
+              // But we can't assume that without testing.
             }
           }
         }
         console.log(`[ViewerBridge] layer "${layerName}": mapped ${foundCount} objects`);
 
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]);
+        await new Promise(r => setTimeout(r, 50)); // small delay to recover
       } catch (e) {
         console.warn(`[ViewerBridge] layer discovery failed for "${layerName}":`, e);
         try { await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]); } catch { /* ignore */ }
