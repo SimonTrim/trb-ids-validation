@@ -549,14 +549,22 @@ async function discoverLayerMapping(
       const hierarchyLayers = await (viewer.getHierarchyChildren as Function)(modelId, [], 'layers', true);
       console.log('[ViewerBridge] hierarchy(layers):', JSON.stringify(hierarchyLayers)?.substring(0, 500));
     } catch (e) { /* ignore */ }
+    try {
+      const hierarchyClass = await (viewer.getHierarchyChildren as Function)(modelId, [], 'class', true);
+      console.log('[ViewerBridge] hierarchy(class):', JSON.stringify(hierarchyClass)?.substring(0, 500));
+    } catch (e) { /* ignore */ }
+    try {
+      const hierarchyNone = await (viewer.getHierarchyChildren as Function)(modelId, [], '', true);
+      console.log('[ViewerBridge] hierarchy(none):', JSON.stringify(hierarchyNone)?.substring(0, 500));
+    } catch (e) { /* ignore */ }
 
     // Log what getObjects returns BEFORE any hide
     try {
       const baselineResult = await (viewer.getObjects as Function)(
         { modelObjectIds: [{ modelId }] },
-        { visible: false },
+        { visible: true },
       );
-      console.log('[ViewerBridge] baseline hidden objects:', JSON.stringify(baselineResult)?.substring(0, 500));
+      console.log('[ViewerBridge] baseline visible objects:', JSON.stringify(baselineResult)?.substring(0, 500));
     } catch (e) {
       console.warn('[ViewerBridge] baseline getObjects failed:', e);
     }
@@ -565,41 +573,47 @@ async function discoverLayerMapping(
       try {
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: false }]);
         
-        // Let the viewer update its internal state
-        await new Promise(r => setTimeout(r, 200));
+        // Wait longer for the viewer to update its internal state
+        await new Promise(r => setTimeout(r, 500));
 
-        const hiddenResult = await (viewer.getObjects as Function)(
+        // Get visible objects (those NOT in the layer)
+        const visibleResult = await (viewer.getObjects as Function)(
           { modelObjectIds: [{ modelId }] },
-          { visible: false },
+          { visible: true },
         );
 
-        console.log(`[ViewerBridge] after hiding "${layerName}":`, JSON.stringify(hiddenResult)?.substring(0, 500));
-
-        let foundCount = 0;
-        if (Array.isArray(hiddenResult)) {
-          for (const modelObjs of hiddenResult) {
-            const objArr = modelObjs?.objects ?? modelObjs?.objectRuntimeIds ?? [];
-            if (Array.isArray(objArr)) {
-              for (const item of objArr) {
-                const rid = typeof item === 'number' ? item : (item?.id ?? item?.objectRuntimeId);
-                if (typeof rid === 'number' && runtimeToIndex.has(rid)) {
-                  const idx = runtimeToIndex.get(rid)!;
-                  if (!objects[idx].layer) {
-                    objects[idx].layer = layerName;
-                    foundCount++;
-                  }
-                }
-              }
-            } else if (modelObjs && modelObjs.modelId === modelId && !modelObjs.objects) {
-              // Sometimes it might return just {modelId: "xxx"} if ALL objects are hidden?
-              // But we can't assume that without testing.
-            }
+        const visibleStr = JSON.stringify(visibleResult);
+        console.log(`[ViewerBridge] visible after hiding "${layerName}":`, visibleStr?.substring(0, 500));
+        
+        // Sometimes visibleResult is just an array of objects
+        let visibleObjs = [];
+        if (Array.isArray(visibleResult)) {
+          if (visibleResult[0]?.objects) {
+            visibleObjs = visibleResult[0].objects;
+          } else if (typeof visibleResult[0] === 'number' || (visibleResult[0] && typeof visibleResult[0] === 'object' && 'id' in visibleResult[0])) {
+            visibleObjs = visibleResult;
           }
         }
-        console.log(`[ViewerBridge] layer "${layerName}": mapped ${foundCount} objects`);
+
+        // Compare visible with ALL objects to find the hidden ones
+        const visibleIds = new Set<number>();
+        for (const item of visibleObjs) {
+          const rid = typeof item === 'number' ? item : (item?.id ?? item?.objectRuntimeId);
+          if (typeof rid === 'number') visibleIds.add(rid);
+        }
+
+        let foundCount = 0;
+        for (const [rid, idx] of runtimeToIndex.entries()) {
+          if (!visibleIds.has(rid) && !objects[idx].layer) {
+            objects[idx].layer = layerName;
+            foundCount++;
+          }
+        }
+        
+        console.log(`[ViewerBridge] layer "${layerName}": mapped ${foundCount} objects by exclusion`);
 
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]);
-        await new Promise(r => setTimeout(r, 50)); // small delay to recover
+        await new Promise(r => setTimeout(r, 100)); // small delay to recover
       } catch (e) {
         console.warn(`[ViewerBridge] layer discovery failed for "${layerName}":`, e);
         try { await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]); } catch { /* ignore */ }
