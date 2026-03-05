@@ -208,8 +208,11 @@ async function getAllModelRuntimeIds(
 
       // Format: [{modelId, objects: [{id: N}, ...]}]
       if (Array.isArray(objResult) && objResult.length > 0 && objResult[0]?.objects) {
-        const objectsArr = objResult[0].objects as Array<{ id: number }>;
-        runtimeIds = objectsArr.map((o: { id: number }) => o.id).filter((id: number) => typeof id === 'number');
+        const objectsArr = objResult[0].objects as Array<Record<string, unknown>>;
+        if (objectsArr.length > 0) {
+          console.log('[ViewerBridge] getObjects sample object:', JSON.stringify(objectsArr[0]));
+        }
+        runtimeIds = objectsArr.map(o => o.id as number).filter(id => typeof id === 'number');
         console.log('[ViewerBridge] getObjects: extracted', runtimeIds.length, 'runtimeIds from objects array');
       }
       // Format: flat array of numbers
@@ -232,10 +235,16 @@ async function getAllModelRuntimeIds(
     console.log('[ViewerBridge] getEntities raw:', typeof entResult, safeStringify(entResult, 300));
     if (Array.isArray(entResult) && entResult.length > 0) {
       const ids: number[] = [];
+      let loggedSample = false;
       for (const item of entResult) {
-        if (typeof item === 'number') ids.push(item);
-        else if (typeof item === 'object' && item) {
+        if (typeof item === 'number') {
+          ids.push(item);
+        } else if (typeof item === 'object' && item) {
           const o = item as Record<string, unknown>;
+          if (!loggedSample) {
+            console.log('[ViewerBridge] getEntities sample item:', JSON.stringify(o));
+            loggedSample = true;
+          }
           const rid = o.runtimeId ?? o.id;
           if (typeof rid === 'number') ids.push(rid);
         }
@@ -460,6 +469,8 @@ async function discoverLayerMapping(
   objects: ParsedObject[],
 ): Promise<void> {
   const viewer = api.viewer as Record<string, unknown>;
+  const viewerKeys = Object.keys(viewer).filter(k => typeof viewer[k] === 'function');
+  console.log('[ViewerBridge] Available viewer methods:', viewerKeys.sort().join(', '));
 
   // Build lookup
   const runtimeToIndex = new Map<number, number>();
