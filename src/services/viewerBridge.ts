@@ -542,7 +542,7 @@ async function discoverLayerMapping(
 
     for (const layerName of layerNames) {
       try {
-        await (viewer.setLayersVisibility as Function)([layerName], false);
+        await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: false }]);
 
         const hiddenResult = await (viewer.getObjects as Function)(
           { modelObjectIds: [{ modelId }] },
@@ -571,10 +571,10 @@ async function discoverLayerMapping(
         }
         console.log(`[ViewerBridge] layer "${layerName}": mapped ${foundCount} objects`);
 
-        await (viewer.setLayersVisibility as Function)([layerName], true);
+        await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]);
       } catch (e) {
         console.warn(`[ViewerBridge] layer discovery failed for "${layerName}":`, e);
-        try { await (viewer.setLayersVisibility as Function)([layerName], true); } catch { /* ignore */ }
+        try { await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]); } catch { /* ignore */ }
       }
     }
 
