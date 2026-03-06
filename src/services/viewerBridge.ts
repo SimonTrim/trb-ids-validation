@@ -783,26 +783,35 @@ export async function getModelTree(
         // Group by layer (Presentation Layer)
         const layerBuckets = new Map<string, ParsedObject[]>();
         for (const obj of regularObjects) {
-          const lyr = obj.layer || 'Sans calque';
-          if (!layerBuckets.has(lyr)) layerBuckets.set(lyr, []);
-          layerBuckets.get(lyr)!.push(obj);
+          const layerStr = obj.layer || 'Sans calque';
+          // Split comma-separated layers, trim, and remove empty strings
+          const layers = layerStr.split(',').map(l => l.trim()).filter(Boolean);
+          if (layers.length === 0) layers.push('Sans calque');
+
+          for (const lyr of layers) {
+            if (!layerBuckets.has(lyr)) layerBuckets.set(lyr, []);
+            layerBuckets.get(lyr)!.push(obj);
+          }
         }
         modelChildren = Array.from(layerBuckets.entries())
           .sort((a, b) => b[1].length - a[1].length)
-          .map(([lyr, objs]) => ({
-            id: `${model.id}-layer-${lyr}`,
-            name: lyr,
-            type: 'level' as const,
-            visible: true,
-            objectCount: objs.length,
-            children: objs.map(o => ({
-              id: `${model.id}-${o.runtimeId}`,
-              name: o.name,
-              type: 'element' as const,
-              ifcClass: o.ifcClass,
+          .map(([lyr, objs]) => {
+            const safeLyrId = lyr.replace(/[^a-zA-Z0-9_-]/g, '_');
+            return {
+              id: `${model.id}-layer-${safeLyrId}`,
+              name: lyr,
+              type: 'level' as const,
               visible: true,
-            })),
-          }));
+              objectCount: objs.length,
+              children: objs.map(o => ({
+                id: `${model.id}-layer-${safeLyrId}-${o.runtimeId}`,
+                name: o.name,
+                type: 'element' as const,
+                ifcClass: o.ifcClass,
+                visible: true,
+              })),
+            };
+          });
       } else {
         // Default: building mode (by IfcBuildingStorey)
         const storeyNodes: ModelTreeNode[] = storeys.map((s, si) => ({
