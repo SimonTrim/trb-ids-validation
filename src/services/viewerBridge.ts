@@ -558,23 +558,38 @@ async function discoverLayerMapping(
       console.log('[ViewerBridge] hierarchy(none):', JSON.stringify(hierarchyNone)?.substring(0, 500));
     } catch (e) { /* ignore */ }
 
+    // Wait for baseline visibility to settle
+    await new Promise(r => setTimeout(r, 1000));
+    
     // Log what getObjects returns BEFORE any hide
+    let baselineCount = 0;
     try {
       const baselineResult = await (viewer.getObjects as Function)(
         { modelObjectIds: [{ modelId }] },
         { visible: true },
       );
-      console.log('[ViewerBridge] baseline visible objects:', JSON.stringify(baselineResult)?.substring(0, 500));
+      
+      let baseObjs = [];
+      if (Array.isArray(baselineResult)) {
+        if (baselineResult[0]?.objects) {
+          baseObjs = baselineResult[0].objects;
+        } else if (typeof baselineResult[0] === 'number' || (baselineResult[0] && typeof baselineResult[0] === 'object' && 'id' in baselineResult[0])) {
+          baseObjs = baselineResult;
+        }
+      }
+      baselineCount = baseObjs.length;
+      console.log('[ViewerBridge] baseline visible objects count:', baselineCount);
     } catch (e) {
       console.warn('[ViewerBridge] baseline getObjects failed:', e);
     }
 
+    // Now test each layer
     for (const layerName of layerNames) {
       try {
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: false }]);
         
         // Wait longer for the viewer to update its internal state
-        await new Promise(r => setTimeout(r, 500));
+        await new Promise(r => setTimeout(r, 600));
 
         // Get visible objects (those NOT in the layer)
         const visibleResult = await (viewer.getObjects as Function)(
@@ -583,7 +598,7 @@ async function discoverLayerMapping(
         );
 
         const visibleStr = JSON.stringify(visibleResult);
-        console.log(`[ViewerBridge] visible after hiding "${layerName}":`, visibleStr?.substring(0, 500));
+        console.log(`[ViewerBridge] visible after hiding "${layerName}": length = ${visibleStr?.length}`);
         
         // Sometimes visibleResult is just an array of objects
         let visibleObjs = [];
@@ -594,6 +609,8 @@ async function discoverLayerMapping(
             visibleObjs = visibleResult;
           }
         }
+        
+        console.log(`[ViewerBridge] visible count after hiding "${layerName}": ${visibleObjs.length} (diff = ${baselineCount - visibleObjs.length})`);
 
         // Compare visible with ALL objects to find the hidden ones
         const visibleIds = new Set<number>();
@@ -604,6 +621,7 @@ async function discoverLayerMapping(
 
         let foundCount = 0;
         for (const [rid, idx] of runtimeToIndex.entries()) {
+          // If an object is NOT in the visible set, it was hidden by this layer!
           if (!visibleIds.has(rid) && !objects[idx].layer) {
             objects[idx].layer = layerName;
             foundCount++;
@@ -611,9 +629,9 @@ async function discoverLayerMapping(
         }
         
         console.log(`[ViewerBridge] layer "${layerName}": mapped ${foundCount} objects by exclusion`);
-
+        
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]);
-        await new Promise(r => setTimeout(r, 100)); // small delay to recover
+        await new Promise(r => setTimeout(r, 200)); // wait for objects to become visible again before testing next layer
       } catch (e) {
         console.warn(`[ViewerBridge] layer discovery failed for "${layerName}":`, e);
         try { await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: true }]); } catch { /* ignore */ }
