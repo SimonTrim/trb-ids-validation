@@ -441,7 +441,9 @@ export function ExplorerTab() {
         const runtimeIds = collectNodeRuntimeIds(currentNode);
         console.log('[Explorer] calling setObjectVisibility, modelId=', modelId, 'runtimeIds=', runtimeIds.length, 'newVisible=', newVisible);
         if (runtimeIds.length > 0) {
-          setObjectVisibility(api, modelId, runtimeIds, newVisible);
+          // If this is a layer node, pass the layer name to use native API
+          const layerName = currentNode.id.includes('-layer-') ? currentNode.name : undefined;
+          setObjectVisibility(api, modelId, runtimeIds, newVisible, layerName);
         }
       }
     }

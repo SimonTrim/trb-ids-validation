@@ -1256,8 +1256,26 @@ export async function setObjectVisibility(
   modelId: string,
   runtimeIds: number[],
   visible: boolean,
+  layerName?: string,
 ): Promise<void> {
-  if (!api || runtimeIds.length === 0) return;
+  if (!api) return;
+
+  // If this is a layer node and we have the layerName, use the native setLayersVisibility API
+  if (layerName) {
+    console.log('[ViewerBridge] setObjectVisibility using native layer API for:', layerName, 'visible=', visible);
+    try {
+      const viewer = api.viewer as Record<string, unknown>;
+      if (typeof viewer.setLayersVisibility === 'function') {
+        await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible }]);
+        console.log('[ViewerBridge] native layer visibility succeeded');
+        return;
+      }
+    } catch (e) {
+      console.warn('[ViewerBridge] native layer visibility failed, falling back to object state:', e);
+    }
+  }
+
+  if (runtimeIds.length === 0) return;
   const selector = { modelObjectIds: [{ modelId, objectRuntimeIds: runtimeIds }] };
   console.log('[ViewerBridge] setObjectVisibility', modelId, runtimeIds.length, 'objects, visible=', visible);
 
