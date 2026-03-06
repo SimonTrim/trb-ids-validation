@@ -622,8 +622,13 @@ async function discoverLayerMapping(
         let foundCount = 0;
         for (const [rid, idx] of runtimeToIndex.entries()) {
           // If an object is NOT in the visible set, it was hidden by this layer!
-          if (!visibleIds.has(rid) && !objects[idx].layer) {
-            objects[idx].layer = layerName;
+          if (!visibleIds.has(rid)) {
+            // Un objet peut appartenir à plusieurs calques, on remplace ou on concatène
+            if (!objects[idx].layer || objects[idx].layer === 'Sans calque') {
+              objects[idx].layer = layerName;
+            } else if (!objects[idx].layer.includes(layerName)) {
+              objects[idx].layer += `, ${layerName}`;
+            }
             foundCount++;
           }
         }
