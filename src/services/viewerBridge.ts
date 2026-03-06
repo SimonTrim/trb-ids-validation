@@ -561,6 +561,12 @@ async function discoverLayerMapping(
     // Wait for baseline visibility to settle
     await new Promise(r => setTimeout(r, 1000));
     
+    // Ensure everything is visible before starting
+    try {
+      await (viewer.setObjectState as Function)({ modelObjectIds: [{ modelId }] }, { visible: 'reset' });
+      await new Promise(r => setTimeout(r, 500));
+    } catch(e) { /* ignore */ }
+    
     // Log what getObjects returns BEFORE any hide
     let baselineCount = 0;
     try {
@@ -586,10 +592,29 @@ async function discoverLayerMapping(
     // Now test each layer
     for (const layerName of layerNames) {
       try {
+        // Ensure objects are visible initially before we check visibility
+        await (viewer.setObjectState as Function)({ modelObjectIds: [{ modelId }] }, { visible: 'reset' });
+        await new Promise(r => setTimeout(r, 500));
+
         await (viewer.setLayersVisibility as Function)(modelId, [{ name: layerName, visible: false }]);
         
         // Wait longer for the viewer to update its internal state
         await new Promise(r => setTimeout(r, 600));
+
+        // Let's get ALL runtime IDs, visible or not, to compare with visibility
+        // Try getting invisible objects first (sometimes this works depending on API version)
+        let hiddenObjs = [];
+        try {
+          const hiddenResult = await (viewer.getObjects as Function)(
+            { modelObjectIds: [{ modelId }] },
+            { visible: false },
+          );
+          if (Array.isArray(hiddenResult) && hiddenResult[0]?.objects) {
+             hiddenObjs = hiddenResult[0].objects;
+          } else if (Array.isArray(hiddenResult) && hiddenResult.length > 0 && (typeof hiddenResult[0] === 'number' || 'id' in hiddenResult[0])) {
+             hiddenObjs = hiddenResult;
+          }
+        } catch (e) { /* ignore */ }
 
         // Get visible objects (those NOT in the layer)
         const visibleResult = await (viewer.getObjects as Function)(
@@ -619,10 +644,16 @@ async function discoverLayerMapping(
           if (typeof rid === 'number') visibleIds.add(rid);
         }
 
+        const hiddenIds = new Set<number>();
+        for (const item of hiddenObjs) {
+          const rid = typeof item === 'number' ? item : (item?.id ?? item?.objectRuntimeId);
+          if (typeof rid === 'number') hiddenIds.add(rid);
+        }
+
         let foundCount = 0;
         for (const [rid, idx] of runtimeToIndex.entries()) {
-          // If an object is NOT in the visible set, it was hidden by this layer!
-          if (!visibleIds.has(rid)) {
+          // If an object is explicitly hidden OR NOT in the visible set (but was in the baseline), it was hidden by this layer!
+          if (hiddenIds.has(rid) || (!visibleIds.has(rid) && baselineCount > 0)) {
             // Un objet peut appartenir à plusieurs calques, on remplace ou on concatène
             if (!objects[idx].layer || objects[idx].layer === 'Sans calque') {
               objects[idx].layer = layerName;
