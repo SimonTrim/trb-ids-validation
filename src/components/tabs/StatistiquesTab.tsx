@@ -357,13 +357,14 @@ function IfcPieTile({ stats }: { stats: ModelStatistics }) {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="flex items-center gap-2">
-          <div
-            ref={containerRef}
-            onMouseMove={handleMouseMove}
-            onMouseLeave={handleMouseLeave}
-            style={{ width: '50%', height: 180, position: 'relative' }}
-          >
+        <div
+          ref={containerRef}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={handleMouseLeave}
+          className="flex items-center gap-2"
+          style={{ position: 'relative' }}
+        >
+          <div style={{ width: '50%', height: 180 }}>
             <ResponsiveContainer width="100%" height={180}>
               <PieChart>
                 <Pie
@@ -391,14 +392,20 @@ function IfcPieTile({ stats }: { stats: ModelStatistics }) {
               if (!item) return null;
               const color = COLORS[hovered.index % COLORS.length];
               const pct = total > 0 ? ((item.count / total) * 100).toFixed(1) : '0';
-              const containerW = containerRef.current?.offsetWidth ?? 200;
-              const isRightHalf = hovered.mouseX > containerW / 2;
+              const containerW = containerRef.current?.offsetWidth ?? 320;
+              const containerH = containerRef.current?.offsetHeight ?? 180;
               const tooltipW = 185;
+              const tooltipH = 70;
 
-              const left = isRightHalf
-                ? hovered.mouseX + 14
-                : hovered.mouseX - tooltipW - 14;
-              const top = hovered.mouseY - 30;
+              // Prefer placing the tooltip to the right of the cursor; flip to
+              // the left only if there is not enough room on the right.
+              let left = hovered.mouseX + 14;
+              if (left + tooltipW > containerW - 4) {
+                left = hovered.mouseX - tooltipW - 14;
+              }
+              // Clamp inside the container so the tooltip stays fully visible.
+              left = Math.max(4, Math.min(left, containerW - tooltipW - 4));
+              const top = Math.max(4, Math.min(hovered.mouseY - 30, containerH - tooltipH - 4));
 
               return (
                 <div
